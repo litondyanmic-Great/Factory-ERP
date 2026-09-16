@@ -1,0 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "Inter", sans-serif;
+
+  --color-paper: #FAF9F5;
+  --color-surface: #FFFFFF;
+  --color-ink: #1C1E22;
+  --color-ink-soft: #5B5F68;
+  --color-line: #E4E1D8;
+
+  --color-indigo: #2B4570;
+  --color-indigo-soft: #E7ECF3;
+  --color-indigo-deep: #1B2C46;
+
+  --color-wool: #8A7B5E;
+  --color-amber: #B8752E;
+  --color-amber-soft: #F5E9D8;
+  --color-green: #3F7A5C;
+  --color-green-soft: #E4EFE9;
+  --color-red: #A8422E;
+  --color-red-soft: #F4E4DF;
+}
+
+html {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+::selection {
+  background: var(--color-indigo-soft);
+}
+
+/* thin scrollbars for the dense table views */
+.scroll-thin::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.scroll-thin::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 4px;
+}
