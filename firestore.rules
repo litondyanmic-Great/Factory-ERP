@@ -29,6 +29,18 @@ service cloud.firestore {
       return isActive() && myRole() in roles;
     }
 
+    // True if I'm admin, OR the given section key is in my assigned
+    // sections list (users/{uid}.sections). Used to restrict production
+    // and quality entries to only the section(s) a staff member was
+    // granted in Admin > User Management.
+    function mySections() {
+      return ('sections' in myProfile()) ? myProfile().sections : [];
+    }
+
+    function canEnterSection(sectionKey) {
+      return isActive() && (myRole() == 'admin' || sectionKey in mySections());
+    }
+
     // system/meta — a single doc used only to decide whether the very next
     // signup becomes the first admin. Any signed-in user may read it (the
     // signup transaction needs this); it may only ever flip from
@@ -39,7 +51,15 @@ service cloud.firestore {
         && request.resource.data.initialized == true;
     }
 
-    // users/{uid} — profile holds role, department, status.
+    // settings/company — factory branding (name, logo, default language,
+    // quality thresholds). Everyone signed in can read it (needed for the
+    // login screen letterhead/logo); only an admin can change it.
+    match /settings/company {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // users/{uid} — profile holds role, department, status, sections.
     match /users/{uid} {
       allow read: if isSignedIn();
 
@@ -58,8 +78,8 @@ service cloud.firestore {
               || get(/databases/$(database)/documents/system/meta).data.initialized != true))
       );
 
-      // Only an admin can change someone's role/department/status
-      // (approving pending users, disabling accounts, etc).
+      // Only an admin can change someone's role/department/status/sections
+      // (approving pending users, disabling accounts, assigning sections).
       allow update: if isAdmin();
       allow delete: if isAdmin();
     }
@@ -67,13 +87,27 @@ service cloud.firestore {
     // styles/{styleId} — orders / production tracking.
     match /styles/{styleId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-      allow create, update: if hasRole(['admin', 'merchandising']);
+      allow create, update: if hasRole(['admin', 'merchandising'])
+        // also allow the winding-queue update, which only ever touches a
+        // nested yarnAllocations subcollection doc (see below), and allow
+        // production-entry writes to the parent style's stage counters.
+        || hasRole(['admin', 'production']);
       allow delete: if isAdmin();
 
       match /productionEntries/{entryId} {
         allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-        allow create: if hasRole(['admin', 'production']);
+        allow create: if hasRole(['admin', 'production']) && canEnterSection(request.resource.data.stage);
         allow update, delete: if isAdmin();
+      }
+
+      // Style-wise yarn dyeing/received/balance/supplier/chalan tracking,
+      // plus the winding-needed / winding-done split used by the Winding
+      // Queue page.
+      match /yarnAllocations/{allocId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow create: if hasRole(['admin', 'store']);
+        allow update: if hasRole(['admin', 'store']) || canEnterSection('winding');
+        allow delete: if isAdmin();
       }
     }
 
@@ -88,6 +122,22 @@ service cloud.firestore {
         allow create: if hasRole(['admin', 'store']);
         allow update, delete: if isAdmin();
       }
+    }
+
+    // qualityChecks/{checkId} — daily QC entries per style + section, used
+    // for the traffic-light dashboard and reports.
+    match /qualityChecks/{checkId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow create: if hasRole(['admin', 'production']) && canEnterSection(request.resource.data.section);
+      allow update, delete: if isAdmin();
+    }
+
+    // zeroThreadReports/{reportId} — pre-packing zero-tolerance thread /
+    // contamination checkpoint.
+    match /zeroThreadReports/{reportId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow create: if hasRole(['admin', 'production']);
+      allow update, delete: if isAdmin();
     }
   }
 }

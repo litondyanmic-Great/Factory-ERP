@@ -4,15 +4,17 @@ import { useNavigate } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary } from '../../components/ui';
-import { ITEM_TYPES } from '../../lib/constants';
+import { ITEM_TYPES, COMMON_UNITS, YARN_UNIT } from '../../lib/constants';
+import { useLang } from '../../lib/i18n';
 
 export default function NewItem() {
   const { user, profile } = useAuth();
+  const { t } = useLang();
   const navigate = useNavigate();
   const [form, setForm] = useState({
     name: '',
     type: 'yarn',
-    unit: 'kg',
+    unit: YARN_UNIT,
     spec: '',
     supplier: '',
     reorderLevel: '',
@@ -22,14 +24,18 @@ export default function NewItem() {
   const [error, setError] = useState('');
 
   function update(field, value) {
-    setForm((f) => ({ ...f, [field]: value }));
+    setForm((f) => {
+      const next = { ...f, [field]: value };
+      if (field === 'type') next.unit = value === 'yarn' ? YARN_UNIT : 'pcs';
+      return next;
+    });
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
     if (!form.name || !form.unit) {
-      setError('নাম এবং একক আবশ্যক।');
+      setError(t('নাম এবং একক আবশ্যক।', 'Name and unit are required.'));
       return;
     }
     setBusy(true);
@@ -49,7 +55,7 @@ export default function NewItem() {
         await addDoc(collection(db, 'inventoryItems', docRef.id, 'transactions'), {
           type: 'in',
           quantity: Number(form.openingStock),
-          note: 'ওপেনিং স্টক',
+          note: t('ওপেনিং স্টক', 'Opening stock'),
           date: new Date().toISOString().slice(0, 10),
           enteredBy: profile?.name || user?.email,
           createdAt: serverTimestamp(),
@@ -57,7 +63,7 @@ export default function NewItem() {
       }
       navigate(`/inventory/${docRef.id}`);
     } catch (err) {
-      setError('আইটেম তৈরি করা যায়নি, আবার চেষ্টা করুন।');
+      setError(t('আইটেম তৈরি করা যায়নি, আবার চেষ্টা করুন।', 'Could not create item, please try again.'));
     } finally {
       setBusy(false);
     }
@@ -66,38 +72,48 @@ export default function NewItem() {
   return (
     <div className="mx-auto max-w-xl space-y-6">
       <div>
-        <h1 className="font-display text-2xl font-semibold text-ink">নতুন আইটেম</h1>
-        <p className="mt-1 text-sm text-ink-soft">ইয়ার্ন অথবা এক্সেসরিজ আইটেম যোগ করুন।</p>
+        <h1 className="font-display text-2xl font-semibold text-ink">{t('নতুন আইটেম', 'New Item')}</h1>
+        <p className="mt-1 text-sm text-ink-soft">{t('ইয়ার্ন অথবা এক্সেসরিজ আইটেম যোগ করুন।', 'Add a yarn or accessory item.')}</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-line bg-surface p-6">
         <div className="grid grid-cols-2 gap-4">
-          <Field label="নাম *">
+          <Field label={t('নাম *', 'Name *')}>
             <input className={inputClass} value={form.name} onChange={(e) => update('name', e.target.value)} />
           </Field>
-          <Field label="ধরন">
+          <Field label={t('ধরন', 'Type')}>
             <select className={inputClass} value={form.type} onChange={(e) => update('type', e.target.value)}>
-              {ITEM_TYPES.map((t) => (
-                <option key={t.key} value={t.key}>
-                  {t.label}
+              {ITEM_TYPES.map((tp) => (
+                <option key={tp.key} value={tp.key}>
+                  {t(tp.label, tp.labelEn)}
                 </option>
               ))}
             </select>
           </Field>
-          <Field label="একক (kg/pcs/cone) *">
-            <input className={inputClass} value={form.unit} onChange={(e) => update('unit', e.target.value)} />
+          <Field label={t('একক', 'Unit')}>
+            {form.type === 'yarn' ? (
+              <input className={`${inputClass} bg-paper`} value="kg" disabled />
+            ) : (
+              <select className={inputClass} value={form.unit} onChange={(e) => update('unit', e.target.value)}>
+                {COMMON_UNITS.filter((u) => u !== 'kg' || true).map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </select>
+            )}
           </Field>
-          <Field label="কালার / স্পেক">
+          <Field label={t('কালার / স্পেক', 'Colour / Spec')}>
             <input className={inputClass} value={form.spec} onChange={(e) => update('spec', e.target.value)} />
           </Field>
-          <Field label="সাপ্লায়ার">
+          <Field label={t('সাপ্লায়ার', 'Supplier')}>
             <input
               className={inputClass}
               value={form.supplier}
               onChange={(e) => update('supplier', e.target.value)}
             />
           </Field>
-          <Field label="রি-অর্ডার লেভেল">
+          <Field label={t('রি-অর্ডার লেভেল', 'Reorder Level')}>
             <input
               type="number"
               min="0"
@@ -106,7 +122,7 @@ export default function NewItem() {
               onChange={(e) => update('reorderLevel', e.target.value)}
             />
           </Field>
-          <Field label="ওপেনিং স্টক">
+          <Field label={t('ওপেনিং স্টক', 'Opening Stock')}>
             <input
               type="number"
               min="0"
@@ -121,10 +137,10 @@ export default function NewItem() {
 
         <div className="flex gap-3">
           <button type="submit" disabled={busy} className={btnPrimary}>
-            {busy ? 'তৈরি হচ্ছে…' : 'আইটেম তৈরি করুন'}
+            {busy ? t('তৈরি হচ্ছে…', 'Creating…') : t('আইটেম তৈরি করুন', 'Create Item')}
           </button>
           <button type="button" className={btnSecondary} onClick={() => navigate(-1)}>
-            বাতিল
+            {t('বাতিল', 'Cancel')}
           </button>
         </div>
       </form>

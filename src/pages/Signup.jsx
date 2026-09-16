@@ -2,9 +2,11 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Field, inputClass, btnPrimary } from '../components/ui';
+import { useLang } from '../lib/i18n';
 
 export default function Signup() {
   const { signup } = useAuth();
+  const { t } = useLang();
   const navigate = useNavigate();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -22,8 +24,8 @@ export default function Signup() {
     } catch (err) {
       setError(
         err.code === 'auth/email-already-in-use'
-          ? 'এই ইমেইলে আগে থেকেই অ্যাকাউন্ট আছে।'
-          : 'সাইন আপ করা যায়নি, আবার চেষ্টা করুন।'
+          ? t('এই ইমেইলে আগে থেকেই অ্যাকাউন্ট আছে।', 'An account already exists with this email.')
+          : t('সাইন আপ করা যায়নি, আবার চেষ্টা করুন।', 'Could not sign up, please try again.')
       );
     } finally {
       setBusy(false);
@@ -37,23 +39,20 @@ export default function Signup() {
           <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded bg-indigo-deep font-display text-base font-bold text-white">
             ও
           </div>
-          <h1 className="font-display text-xl font-semibold text-ink">নতুন অ্যাকাউন্ট</h1>
+          <h1 className="font-display text-xl font-semibold text-ink">{t('নতুন অ্যাকাউন্ট', 'New Account')}</h1>
           <p className="mt-1 text-sm text-ink-soft">
-            প্রথম অ্যাকাউন্টটি নিজে থেকেই অ্যাডমিন হয়ে যাবে। এরপর প্রতিটি নতুন অ্যাকাউন্ট অ্যাডমিনের
-            অনুমোদনের অপেক্ষায় থাকবে।
+            {t(
+              'প্রথম অ্যাকাউন্টটি নিজে থেকেই অ্যাডমিন হয়ে যাবে। এরপর প্রতিটি নতুন অ্যাকাউন্ট অ্যাডমিনের অনুমোদনের অপেক্ষায় থাকবে।',
+              'The very first account automatically becomes admin. Every account after that waits for admin approval.'
+            )}
           </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-line bg-surface p-6">
-          <Field label="নাম">
-            <input
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className={inputClass}
-            />
+          <Field label={t('নাম', 'Name')}>
+            <input required value={name} onChange={(e) => setName(e.target.value)} className={inputClass} />
           </Field>
-          <Field label="ইমেইল">
+          <Field label={t('ইমেইল', 'Email')}>
             <input
               type="email"
               required
@@ -62,7 +61,7 @@ export default function Signup() {
               className={inputClass}
             />
           </Field>
-          <Field label="পাসওয়ার্ড">
+          <Field label={t('পাসওয়ার্ড', 'Password')}>
             <input
               type="password"
               required
@@ -74,14 +73,14 @@ export default function Signup() {
           </Field>
           {error && <p className="text-sm text-red">{error}</p>}
           <button type="submit" disabled={busy} className={`${btnPrimary} w-full`}>
-            {busy ? 'তৈরি হচ্ছে…' : 'অ্যাকাউন্ট তৈরি করুন'}
+            {busy ? t('তৈরি হচ্ছে…', 'Creating…') : t('অ্যাকাউন্ট তৈরি করুন', 'Create Account')}
           </button>
         </form>
 
         <p className="mt-4 text-center text-sm text-ink-soft">
-          অ্যাকাউন্ট আছে?{' '}
+          {t('অ্যাকাউন্ট আছে?', 'Already have an account?')}{' '}
           <Link to="/login" className="font-medium text-indigo">
-            লগইন করুন
+            {t('লগইন করুন', 'Log in')}
           </Link>
         </p>
       </div>

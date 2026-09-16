@@ -1,22 +1,29 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu } from 'lucide-react';
+import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu, ShieldCheck, Settings as SettingsIcon, Languages } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { can, DEPARTMENTS } from '../lib/constants';
-
-const NAV = [
-  { to: '/', label: 'ড্যাশবোর্ড', icon: LayoutGrid, permission: null },
-  { to: '/production', label: 'প্রোডাকশন', icon: Factory, permission: 'style:view' },
-  { to: '/inventory', label: 'ইনভেন্টরি', icon: Boxes, permission: 'inventory:view' },
-  { to: '/admin/users', label: 'ইউজার ম্যানেজমেন্ট', icon: Users, permission: 'admin:only' },
-];
+import { can, departmentLabel } from '../lib/constants';
+import { useLang } from '../lib/i18n';
+import { useSettings } from '../lib/settingsContext';
 
 export default function Shell() {
   const { profile, logout } = useAuth();
+  const { t, lang, toggle } = useLang();
+  const { settings } = useSettings();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
 
-  const deptLabel = DEPARTMENTS.find((d) => d.key === profile?.department)?.label || '';
+  const NAV = [
+    { to: '/', label: t('ড্যাশবোর্ড', 'Dashboard'), icon: LayoutGrid, permission: null },
+    { to: '/production', label: t('প্রোডাকশন', 'Production'), icon: Factory, permission: 'style:view' },
+    { to: '/inventory', label: t('ইনভেন্টরি', 'Inventory'), icon: Boxes, permission: 'inventory:view' },
+    { to: '/quality', label: t('কোয়ালিটি', 'Quality'), icon: ShieldCheck, permission: 'quality:view' },
+    { to: '/admin/users', label: t('ইউজার ম্যানেজমেন্ট', 'User Management'), icon: Users, permission: 'admin:only' },
+    { to: '/admin/settings', label: t('সেটিংস', 'Settings'), icon: SettingsIcon, permission: 'admin:only' },
+  ];
+
+  const deptLabel = departmentLabel(profile?.department, lang);
+  const companyName = lang === 'en' ? settings?.companyNameEn || settings?.companyName : settings?.companyName;
 
   async function handleLogout() {
     await logout();
@@ -36,12 +43,16 @@ export default function Shell() {
         className={`${open ? 'flex' : 'hidden'} md:flex fixed md:static inset-0 z-40 w-64 shrink-0 flex-col bg-indigo-deep text-white`}
       >
         <div className="flex items-center gap-2 border-b border-white/10 px-6 py-5">
-          <div className="flex h-8 w-8 items-center justify-center rounded bg-amber font-display text-sm font-bold text-white">
-            ও
-          </div>
-          <div>
-            <p className="font-display text-[15px] font-semibold leading-tight">ওয়ার্মলুম ইআরপি</p>
-            <p className="text-[11px] text-white/50">সোয়েটার ফ্যাক্টরি</p>
+          {settings?.logoDataUrl ? (
+            <img src={settings.logoDataUrl} alt="logo" className="h-8 w-8 rounded object-contain bg-white/10" />
+          ) : (
+            <div className="flex h-8 w-8 items-center justify-center rounded bg-amber font-display text-sm font-bold text-white">
+              {companyName?.[0] || 'ও'}
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="truncate font-display text-[15px] font-semibold leading-tight">{companyName}</p>
+            <p className="text-[11px] text-white/50">{t('সোয়েটার ফ্যাক্টরি', 'Sweater Factory')}</p>
           </div>
         </div>
 
@@ -67,13 +78,19 @@ export default function Shell() {
         </nav>
 
         <div className="border-t border-white/10 px-4 py-4">
+          <button
+            onClick={toggle}
+            className="mb-3 flex w-full items-center gap-2 rounded-md border border-white/15 px-2.5 py-1.5 text-xs font-medium text-white/80 hover:bg-white/5"
+          >
+            <Languages size={14} /> {lang === 'bn' ? 'English' : 'বাংলা'}
+          </button>
           <p className="truncate text-sm font-medium">{profile?.name}</p>
           <p className="truncate text-xs text-white/50">{deptLabel}</p>
           <button
             onClick={handleLogout}
             className="mt-3 flex items-center gap-2 text-sm text-white/70 hover:text-white"
           >
-            <LogOut size={16} /> লগ আউট
+            <LogOut size={16} /> {t('লগ আউট', 'Log out')}
           </button>
         </div>
       </aside>
@@ -84,8 +101,10 @@ export default function Shell() {
           <button onClick={() => setOpen((o) => !o)} className="text-ink">
             <Menu size={22} />
           </button>
-          <p className="font-display font-semibold">ওয়ার্মলুম ইআরপি</p>
-          <div className="w-[22px]" />
+          <p className="font-display font-semibold">{companyName}</p>
+          <button onClick={toggle} className="text-ink-soft">
+            <Languages size={20} />
+          </button>
         </div>
         <main className="flex-1 overflow-y-auto p-4 md:p-8">
           <Outlet />

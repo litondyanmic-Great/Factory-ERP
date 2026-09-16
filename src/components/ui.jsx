@@ -33,11 +33,28 @@ export function Pill({ children, tone = 'indigo' }) {
     green: 'bg-green-soft text-green',
     amber: 'bg-amber-soft text-amber',
     red: 'bg-red-soft text-red',
+    grey: 'bg-line/60 text-ink-soft',
   }[tone];
   return (
     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${cls}`}>
       {children}
     </span>
+  );
+}
+
+// Traffic-light dot used across Quality screens: green/amber/red/grey.
+export function TrafficLight({ tone = 'grey', size = 10 }) {
+  const cls = {
+    green: 'bg-green',
+    amber: 'bg-amber',
+    red: 'bg-red',
+    grey: 'bg-line',
+  }[tone];
+  return (
+    <span
+      className={`inline-block shrink-0 rounded-full ${cls}`}
+      style={{ width: size, height: size }}
+    />
   );
 }
 
@@ -67,3 +84,46 @@ export const btnPrimary =
 
 export const btnSecondary =
   'inline-flex items-center justify-center gap-2 rounded-md border border-line bg-surface px-4 py-2 text-sm font-medium text-ink transition-colors hover:bg-paper';
+
+export const btnDanger =
+  'inline-flex items-center justify-center gap-2 rounded-md border border-red/30 bg-red-soft px-4 py-2 text-sm font-medium text-red transition-colors hover:bg-red/10';
+
+export const iconBtn =
+  'inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors';
+
+export function SearchInput({ value, onChange, placeholder }) {
+  return (
+    <div className="relative w-full max-w-sm">
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className={`${inputClass} pl-3`}
+      />
+    </div>
+  );
+}
+
+// Small modal used for edit forms across the app (style edit, item edit,
+// user edit, etc). Click outside or Escape closes it via onClose.
+export function Modal({ title, onClose, children, wide }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`max-h-[90vh] w-full ${wide ? 'max-w-2xl' : 'max-w-lg'} overflow-y-auto rounded-lg border border-line bg-surface p-6 shadow-xl`}
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="font-display text-base font-semibold text-ink">{title}</h3>
+          <button onClick={onClose} className="text-ink-soft hover:text-ink">
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
