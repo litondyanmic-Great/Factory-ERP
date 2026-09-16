@@ -1,0 +1,93 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function myRole() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? myProfile().role
+        : 'none';
+    }
+
+    function isActive() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && myProfile().status == 'active';
+    }
+
+    function isAdmin() {
+      return isActive() && myRole() == 'admin';
+    }
+
+    function hasRole(roles) {
+      return isActive() && myRole() in roles;
+    }
+
+    // system/meta — a single doc used only to decide whether the very next
+    // signup becomes the first admin. Any signed-in user may read it (the
+    // signup transaction needs this); it may only ever flip from
+    // "not initialized" to "initialized", never back.
+    match /system/meta {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && request.resource.data.initialized == true;
+    }
+
+    // users/{uid} — profile holds role, department, status.
+    match /users/{uid} {
+      allow read: if isSignedIn();
+
+      // A user may only create their OWN profile document, exactly once,
+      // at signup. It must start as 'pending' UNLESS system/meta is not yet
+      // initialized, in which case it may be the bootstrap 'admin'.
+      allow create: if isSignedIn() && request.auth.uid == uid && (
+        (request.resource.data.role == 'pending'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.department == null)
+        ||
+        (request.resource.data.role == 'admin'
+          && request.resource.data.status == 'active'
+          && request.resource.data.department == 'admin'
+          && (!exists(/databases/$(database)/documents/system/meta)
+              || get(/databases/$(database)/documents/system/meta).data.initialized != true))
+      );
+
+      // Only an admin can change someone's role/department/status
+      // (approving pending users, disabling accounts, etc).
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // styles/{styleId} — orders / production tracking.
+    match /styles/{styleId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow create, update: if hasRole(['admin', 'merchandising']);
+      allow delete: if isAdmin();
+
+      match /productionEntries/{entryId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow create: if hasRole(['admin', 'production']);
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // inventoryItems/{itemId} — yarn & accessories.
+    match /inventoryItems/{itemId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow create, update: if hasRole(['admin', 'store']);
+      allow delete: if isAdmin();
+
+      match /transactions/{txnId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow create: if hasRole(['admin', 'store']);
+        allow update, delete: if isAdmin();
+      }
+    }
+  }
+}

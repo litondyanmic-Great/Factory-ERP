@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# React Router uses client-side routing, so every path must fall back to
+# index.html and let the app decide what to render.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
