@@ -9,6 +9,7 @@ export const STAGES = [
   { key: 'mending', label: 'মেন্ডিং', labelEn: 'Mending' },
   { key: 'lightCheck', label: 'লাইট চেক', labelEn: 'Light Check' },
   { key: 'sewing', label: 'সুইং', labelEn: 'Sewing' },
+  { key: 'attachment', label: 'অ্যাটাচমেন্ট', labelEn: 'Attachment' },
   { key: 'wash', label: 'ওয়াশ', labelEn: 'Wash' },
   { key: 'pqc', label: 'পিকিউসি', labelEn: 'PQC' },
   { key: 'iron', label: 'আয়রন', labelEn: 'Iron' },
@@ -19,15 +20,19 @@ export const STAGES = [
 export const STAGE_KEYS = STAGES.map((s) => s.key);
 export const FINAL_STAGE_KEY = 'packing';
 
-// Winding sits before Knitting in the yarn flow (yarn -> winding -> knitting)
-// but it is not a garment-production stage, so it is tracked separately in
-// Inventory rather than in the STAGES pipeline above.
+// Winding and Accessories Store sit alongside the garment-production
+// pipeline (yarn -> winding -> knitting, and accessories -> specific
+// section) but are not themselves production stages, so they are tracked
+// separately in Inventory rather than in the STAGES pipeline above.
 export const WINDING_SECTION = { key: 'winding', label: 'ওয়াইন্ডিং', labelEn: 'Winding' };
+export const ACCESSORIES_SECTION = { key: 'accessoriesStore', label: 'এক্সেসরিজ স্টোর', labelEn: 'Accessories Store' };
+export const YARN_STORE_SECTION = { key: 'yarnStore', label: 'ইয়ার্ন স্টোর', labelEn: 'Yarn Store' };
 
 // All "sections" a staff member could be individually assigned to (used by
 // Admin > Users to grant entry rights one section at a time, and by
-// Production/Quality entry forms to restrict the section dropdown).
-export const ALL_SECTIONS = [WINDING_SECTION, ...STAGES];
+// Production/Quality/Inventory entry forms to restrict what each person
+// can do).
+export const ALL_SECTIONS = [YARN_STORE_SECTION, WINDING_SECTION, ACCESSORIES_SECTION, ...STAGES];
 
 export function stageLabel(key, lang = 'bn') {
   const s = ALL_SECTIONS.find((x) => x.key === key);
@@ -53,32 +58,39 @@ export const ITEM_TYPES = [
   { key: 'accessory', label: 'এক্সেসরিজ', labelEn: 'Accessories' },
 ];
 
-// Common stock units. Yarn is always tracked in kg (factory standard for
-// yarn accounting); accessories/other items can be pcs, dozen, set, etc.
-export const YARN_UNIT = 'kg';
-export const COMMON_UNITS = ['kg', 'pcs', 'dozen', 'set', 'yard', 'cone', 'box', 'roll'];
-
-// Common sweater-factory defect types used across Quality entry forms.
-export const DEFECT_TYPES = [
-  { key: 'looseThread', label: 'লুজ থ্রেড', labelEn: 'Loose Thread' },
-  { key: 'hole', label: 'হোল', labelEn: 'Hole' },
-  { key: 'stain', label: 'দাগ/স্টেইন', labelEn: 'Stain' },
-  { key: 'colorShade', label: 'কালার শেড মিসম্যাচ', labelEn: 'Color Shade Mismatch' },
-  { key: 'sizeIssue', label: 'সাইজ সমস্যা', labelEn: 'Size Issue' },
-  { key: 'stitching', label: 'স্টিচিং ডিফেক্ট', labelEn: 'Stitching Defect' },
-  { key: 'accessory', label: 'এক্সেসরিজ ডিফেক্ট', labelEn: 'Accessory Defect' },
-  { key: 'measurement', label: 'মেজারমেন্ট সমস্যা', labelEn: 'Measurement Issue' },
-  { key: 'needleMark', label: 'নিডল মার্ক', labelEn: 'Needle Mark' },
-  { key: 'washIssue', label: 'ওয়াশ সমস্যা', labelEn: 'Wash Issue' },
-  { key: 'packing', label: 'প্যাকিং ডিফেক্ট', labelEn: 'Packing Defect' },
-  { key: 'other', label: 'অন্যান্য', labelEn: 'Other' },
+// Suggested (not locked) accessory item names — shown as datalist
+// suggestions when creating a new accessory item, but the user can always
+// type something else too.
+export const ACCESSORY_NAME_SUGGESTIONS = [
+  'Main Label',
+  'Care Label',
+  'Size Label',
+  'Price Sticker',
+  'Poly Sticker',
+  'Hangtag',
+  'Polybag',
 ];
+
+// Common stock units. Yarn is always tracked in lb (pound) — this is the
+// factory's standard for yarn accounting; accessories/other items can be
+// pcs, dozen, kg, set, etc. Keep this list short and standard.
+export const YARN_UNIT = 'lb';
+export const COMMON_UNITS = ['pcs', 'dozen', 'kg', 'lb', 'yard', 'cone', 'box', 'roll', 'set'];
+
+// Production "blocks" / lines (A through M) used to tag which line a QC
+// check was done on, alongside Style and Section.
+export const BLOCKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'];
+
+// Sentinel style id used by Quality entry when a check covers a mixed lot
+// rather than one specific style.
+export const ALL_STYLE_SENTINEL = '__ALL__';
+export const ALL_STYLE_LABEL = { bn: 'সব স্টাইল (মিক্সড)', en: 'All Style (Mixed)' };
 
 // role -> permissions. Broad module-level gates; fine-grained "which
 // section can THIS person enter data for" is handled separately via
 // users/{uid}.sections + canEnterSection() below, since two people in the
-// same department (e.g. two "production" users) can be limited to
-// different stages.
+// same department (e.g. two "production" users, or two "store" users) can
+// be limited to different sections.
 export function can(role, action) {
   if (role === 'admin') return true;
   const table = {
@@ -103,6 +115,8 @@ export function can(role, action) {
       'inventory:view',
       'style:view',
       'winding:entry',
+      'yarnStore:entry',
+      'accessories:entry',
       'report:view',
     ],
   };
@@ -110,10 +124,10 @@ export function can(role, action) {
 }
 
 // A user can enter data for a given section (production stage / winding /
-// quality section) if they are admin, OR their profile explicitly lists
-// that section in profile.sections. If a user has no sections assigned at
-// all, admins/merchandising still fall back to "all" for viewing purposes,
-// but entry always requires an explicit assignment for non-admins.
+// yarn store / accessories store / quality section) if they are admin, OR
+// their profile explicitly lists that section in profile.sections. If a
+// user has no sections assigned at all, entry always requires an explicit
+// assignment for non-admins.
 export function canEnterSection(profile, sectionKey) {
   if (!profile) return false;
   if (profile.role === 'admin') return true;

@@ -1,5 +1,5 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
-import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu, ShieldCheck, Settings as SettingsIcon, Languages } from 'lucide-react';
+import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
+import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu, ShieldCheck, Settings as SettingsIcon, Languages, ArrowLeft } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { can, departmentLabel } from '../lib/constants';
@@ -11,7 +11,9 @@ export default function Shell() {
   const { t, lang, toggle } = useLang();
   const { settings } = useSettings();
   const navigate = useNavigate();
+  const location = useLocation();
   const [open, setOpen] = useState(false);
+  const showBack = location.pathname !== '/';
 
   const NAV = [
     { to: '/', label: t('ড্যাশবোর্ড', 'Dashboard'), icon: LayoutGrid, permission: null },
@@ -106,6 +108,16 @@ export default function Shell() {
             <Languages size={20} />
           </button>
         </div>
+        {showBack && (
+          <div className="border-b border-line bg-surface px-4 py-2.5 md:px-8">
+            <button
+              onClick={() => navigate(-1)}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-soft transition-colors hover:text-ink"
+            >
+              <ArrowLeft size={16} /> {t('পেছনে যান', 'Back')}
+            </button>
+          </div>
+        )}
         <main className="flex-1 overflow-y-auto p-4 md:p-8">
           <Outlet />
         </main>

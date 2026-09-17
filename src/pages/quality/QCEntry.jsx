@@ -1,11 +1,13 @@
 import { useMemo, useState } from 'react';
 import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
+import { Plus } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { Field, inputClass, btnPrimary, TrafficLight } from '../../components/ui';
+import { Field, inputClass, btnPrimary, btnSecondary, TrafficLight } from '../../components/ui';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { STAGES, DEFECT_TYPES, canEnterSection, qualityTone } from '../../lib/constants';
+import { STAGES, BLOCKS, ALL_STYLE_SENTINEL, ALL_STYLE_LABEL, canEnterSection, qualityTone } from '../../lib/constants';
+import { useSectionDefects } from '../../lib/useSectionDefects';
 import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
 
@@ -18,16 +20,20 @@ export default function QCEntry() {
 
   const [styleId, setStyleId] = useState('');
   const [styleLabel, setStyleLabel] = useState('');
+  const [block, setBlock] = useState(BLOCKS[0]);
   const [section, setSection] = useState(allowedSections[0]?.key || '');
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [checkedQty, setCheckedQty] = useState('');
-  const [defects, setDefects] = useState({});
+  const [defectValues, setDefectValues] = useState({});
   const [remarks, setRemarks] = useState('');
+  const [newDefectLabel, setNewDefectLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  const totalDefects = Object.values(defects).reduce((s, v) => s + (Number(v) || 0), 0);
+  const { defects: sectionDefects, addCustomDefect } = useSectionDefects(section);
+
+  const totalDefects = Object.values(defectValues).reduce((s, v) => s + (Number(v) || 0), 0);
   const passRate =
     checkedQty && Number(checkedQty) > 0
       ? Math.max(0, ((Number(checkedQty) - totalDefects) / Number(checkedQty)) * 100)
@@ -35,7 +41,22 @@ export default function QCEntry() {
   const tone = qualityTone(passRate, settings);
 
   function updateDefect(key, value) {
-    setDefects((d) => ({ ...d, [key]: value }));
+    setDefectValues((d) => ({ ...d, [key]: value }));
+  }
+
+  async function handleAddCustomDefect() {
+    const entry = await addCustomDefect(newDefectLabel);
+    if (entry) setNewDefectLabel('');
+  }
+
+  function pickStyle(id, style) {
+    if (id === ALL_STYLE_SENTINEL) {
+      setStyleId(ALL_STYLE_SENTINEL);
+      setStyleLabel(t(ALL_STYLE_LABEL.bn, ALL_STYLE_LABEL.en));
+    } else {
+      setStyleId(id);
+      setStyleLabel(style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '');
+    }
   }
 
   async function handleSubmit(e) {
@@ -43,7 +64,7 @@ export default function QCEntry() {
     setError('');
     setSuccess('');
     if (!styleId) {
-      setError(t('একটি স্টাইল নির্বাচন করুন।', 'Select a style.'));
+      setError(t('একটি স্টাইল নির্বাচন করুন (অথবা "সব স্টাইল" বেছে নিন)।', 'Select a style (or choose "All Style").'));
       return;
     }
     if (!section || !canEnterSection(profile, section)) {
@@ -64,19 +85,25 @@ export default function QCEntry() {
       await addDoc(collection(db, 'qualityChecks'), {
         styleId,
         styleLabel,
+        block,
         section,
         date,
         checkedQty: n,
         defectQty: totalDefects,
         passRate: Math.round(((n - totalDefects) / n) * 1000) / 10,
-        defects: Object.fromEntries(Object.entries(defects).filter(([, v]) => Number(v) > 0).map(([k, v]) => [k, Number(v)])),
+        defects: Object.fromEntries(
+          Object.entries(defectValues)
+            .filter(([, v]) => Number(v) > 0)
+            .map(([k, v]) => [k, Number(v)])
+        ),
+        defectLabels: Object.fromEntries(sectionDefects.map((d) => [d.key, d.label])),
         remarks: remarks || '',
         enteredBy: profile?.name || user?.email,
         createdAt: serverTimestamp(),
       });
       setSuccess(t('QC এন্ট্রি সেভ হয়েছে।', 'QC entry saved.'));
       setCheckedQty('');
-      setDefects({});
+      setDefectValues({});
       setRemarks('');
     } catch (err) {
       setError(t('এন্ট্রি সেভ করা যায়নি।', 'Could not save entry.'));
@@ -110,13 +137,31 @@ export default function QCEntry() {
         <form onSubmit={handleSubmit} className="space-y-5 rounded-lg border border-line bg-surface p-6">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label={t('স্টাইল *', 'Style *')}>
-              <StyleSearchSelect
-                value={styleId}
-                onChange={(id, style) => {
-                  setStyleId(id);
-                  setStyleLabel(style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '');
-                }}
-              />
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => pickStyle(ALL_STYLE_SENTINEL)}
+                  className={`w-full rounded-md border px-3 py-1.5 text-left text-xs font-medium transition-colors ${
+                    styleId === ALL_STYLE_SENTINEL
+                      ? 'border-indigo bg-indigo text-white'
+                      : 'border-line bg-paper text-ink-soft hover:bg-line/40'
+                  }`}
+                >
+                  {t(ALL_STYLE_LABEL.bn, ALL_STYLE_LABEL.en)} — {t('মিক্সড লট চেক', 'mixed-lot check')}
+                </button>
+                {styleId !== ALL_STYLE_SENTINEL && (
+                  <StyleSearchSelect value={styleId} onChange={pickStyle} />
+                )}
+              </div>
+            </Field>
+            <Field label={t('ব্লক', 'Block')}>
+              <select value={block} onChange={(e) => setBlock(e.target.value)} className={inputClass}>
+                {BLOCKS.map((b) => (
+                  <option key={b} value={b}>
+                    {t('ব্লক', 'Block')} {b}
+                  </option>
+                ))}
+              </select>
             </Field>
             <Field label={t('সেকশন *', 'Section *')}>
               <select value={section} onChange={(e) => setSection(e.target.value)} className={inputClass}>
@@ -143,18 +188,35 @@ export default function QCEntry() {
 
           <div>
             <p className="mb-2 text-sm font-medium text-ink">{t('ডিফেক্ট ব্রেকডাউন (ঐচ্ছিক)', 'Defect Breakdown (optional)')}</p>
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              {DEFECT_TYPES.map((d) => (
-                <Field key={d.key} label={t(d.label, d.labelEn)}>
-                  <input
-                    type="number"
-                    min="0"
-                    value={defects[d.key] || ''}
-                    onChange={(e) => updateDefect(d.key, e.target.value)}
-                    className={inputClass}
-                  />
-                </Field>
-              ))}
+            {sectionDefects.length === 0 ? (
+              <p className="text-xs text-ink-soft">{t('এই সেকশনের জন্য এখনো কোনো ডিফেক্ট তালিকা নেই — নিচ থেকে যোগ করুন।', 'No defect list for this section yet — add one below.')}</p>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                {sectionDefects.map((d) => (
+                  <Field key={d.key} label={d.label}>
+                    <input
+                      type="number"
+                      min="0"
+                      value={defectValues[d.key] || ''}
+                      onChange={(e) => updateDefect(d.key, e.target.value)}
+                      className={inputClass}
+                    />
+                  </Field>
+                ))}
+              </div>
+            )}
+            <div className="mt-3 flex items-end gap-2 border-t border-line pt-3">
+              <Field label={t('নতুন ডিফেক্ট যোগ করুন', 'Add a new defect')}>
+                <input
+                  value={newDefectLabel}
+                  onChange={(e) => setNewDefectLabel(e.target.value)}
+                  placeholder={t('যেমন: ওয়াশ কালার ফেইড', 'e.g. Wash Colour Fade')}
+                  className={inputClass}
+                />
+              </Field>
+              <button type="button" onClick={handleAddCustomDefect} className={`${btnSecondary} shrink-0`}>
+                <Plus size={15} /> {t('যোগ করুন', 'Add')}
+              </button>
             </div>
           </div>
 

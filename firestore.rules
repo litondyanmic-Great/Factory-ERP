@@ -30,9 +30,9 @@ service cloud.firestore {
     }
 
     // True if I'm admin, OR the given section key is in my assigned
-    // sections list (users/{uid}.sections). Used to restrict production
-    // and quality entries to only the section(s) a staff member was
-    // granted in Admin > User Management.
+    // sections list (users/{uid}.sections). Used to restrict production,
+    // quality, yarn-store, winding, and accessories-store entries to only
+    // the section(s) a staff member was granted in Admin > User Management.
     function mySections() {
       return ('sections' in myProfile()) ? myProfile().sections : [];
     }
@@ -57,6 +57,16 @@ service cloud.firestore {
     match /settings/company {
       allow read: if isSignedIn();
       allow write: if isAdmin();
+    }
+
+    // defectTypes/{section} — per-section defect name list. Seed defects
+    // ship in the app itself; this doc only holds custom defects someone
+    // added on the floor for that section, so it must only ever be
+    // extended by someone permitted to work in that section.
+    match /defectTypes/{section} {
+      allow read: if isSignedIn();
+      allow create, update: if hasRole(['admin', 'production']) && canEnterSection(section);
+      allow delete: if isAdmin();
     }
 
     // users/{uid} — profile holds role, department, status, sections.
@@ -88,9 +98,8 @@ service cloud.firestore {
     match /styles/{styleId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
       allow create, update: if hasRole(['admin', 'merchandising'])
-        // also allow the winding-queue update, which only ever touches a
-        // nested yarnAllocations subcollection doc (see below), and allow
-        // production-entry writes to the parent style's stage counters.
+        // also allow production-entry writes to the parent style's stage
+        // counters (StyleDetail increments styles/{id}.stages.{stage}).
         || hasRole(['admin', 'production']);
       allow delete: if isAdmin();
 
@@ -100,14 +109,25 @@ service cloud.firestore {
         allow update, delete: if isAdmin();
       }
 
-      // Style-wise yarn dyeing/received/balance/supplier/chalan tracking,
-      // plus the winding-needed / winding-done split used by the Winding
-      // Queue page.
-      match /yarnAllocations/{allocId} {
+      // Style-wise yarn ledger: dyeing order -> receipt (chalan) -> issue
+      // to winding / direct-to-knitting -> winding-to-knitting -> knitting
+      // consumption. Balances are always derived client-side from this
+      // ledger, never stored, so deleting a wrong entry stays consistent.
+      match /yarnLedger/{entryId} {
         allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-        allow create: if hasRole(['admin', 'store']);
-        allow update: if hasRole(['admin', 'store']) || canEnterSection('winding');
-        allow delete: if isAdmin();
+        allow create: if hasRole(['admin', 'store'])
+          || canEnterSection('yarnStore')
+          || canEnterSection('winding')
+          || canEnterSection('knitting');
+        allow update, delete: if isAdmin();
+      }
+
+      // Style-wise accessory ledger: receive against style (chalan/
+      // supplier) -> issue to a specific production section.
+      match /accessoryLedger/{entryId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow create: if hasRole(['admin', 'store']) || canEnterSection('accessoriesStore');
+        allow update, delete: if isAdmin();
       }
     }
 
@@ -124,8 +144,8 @@ service cloud.firestore {
       }
     }
 
-    // qualityChecks/{checkId} — daily QC entries per style + section, used
-    // for the traffic-light dashboard and reports.
+    // qualityChecks/{checkId} — daily QC entries per style + section
+    // (+ block), used for the traffic-light dashboard, reports and trends.
     match /qualityChecks/{checkId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
       allow create: if hasRole(['admin', 'production']) && canEnterSection(request.resource.data.section);

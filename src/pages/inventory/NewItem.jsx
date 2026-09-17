@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary } from '../../components/ui';
-import { ITEM_TYPES, COMMON_UNITS, YARN_UNIT } from '../../lib/constants';
+import { ITEM_TYPES, COMMON_UNITS, YARN_UNIT, ACCESSORY_NAME_SUGGESTIONS } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 export default function NewItem() {
@@ -79,7 +79,20 @@ export default function NewItem() {
       <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-line bg-surface p-6">
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('নাম *', 'Name *')}>
-            <input className={inputClass} value={form.name} onChange={(e) => update('name', e.target.value)} />
+            <input
+              className={inputClass}
+              value={form.name}
+              onChange={(e) => update('name', e.target.value)}
+              list={form.type === 'accessory' ? 'accessory-name-suggestions' : undefined}
+              placeholder={form.type === 'accessory' ? t('যেমন: মেইন লেবেল', 'e.g. Main Label') : ''}
+            />
+            {form.type === 'accessory' && (
+              <datalist id="accessory-name-suggestions">
+                {ACCESSORY_NAME_SUGGESTIONS.map((s) => (
+                  <option key={s} value={s} />
+                ))}
+              </datalist>
+            )}
           </Field>
           <Field label={t('ধরন', 'Type')}>
             <select className={inputClass} value={form.type} onChange={(e) => update('type', e.target.value)}>
@@ -92,10 +105,10 @@ export default function NewItem() {
           </Field>
           <Field label={t('একক', 'Unit')}>
             {form.type === 'yarn' ? (
-              <input className={`${inputClass} bg-paper`} value="kg" disabled />
+              <input className={`${inputClass} bg-paper`} value="lb" disabled />
             ) : (
               <select className={inputClass} value={form.unit} onChange={(e) => update('unit', e.target.value)}>
-                {COMMON_UNITS.filter((u) => u !== 'kg' || true).map((u) => (
+                {COMMON_UNITS.map((u) => (
                   <option key={u} value={u}>
                     {u}
                   </option>

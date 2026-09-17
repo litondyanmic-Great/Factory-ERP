@@ -21,6 +21,8 @@ import QualityDashboard from './pages/quality/QualityDashboard';
 import QCEntry from './pages/quality/QCEntry';
 import QualityReports from './pages/quality/QualityReports';
 import ZeroThreadReport from './pages/quality/ZeroThreadReport';
+import QualityTrends from './pages/quality/QualityTrends';
+import StyleAccessoryTracking from './pages/inventory/StyleAccessoryTracking';
 
 export default function App() {
   return (
@@ -98,6 +100,14 @@ export default function App() {
               }
             />
             <Route
+              path="/inventory/accessory-tracking"
+              element={
+                <ProtectedRoute permission="inventory:view">
+                  <StyleAccessoryTracking />
+                </ProtectedRoute>
+              }
+            />
+            <Route
               path="/inventory/:id"
               element={
                 <ProtectedRoute permission="inventory:view">
@@ -135,6 +145,14 @@ export default function App() {
               element={
                 <ProtectedRoute permission="quality:view">
                   <ZeroThreadReport />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/quality/trends"
+              element={
+                <ProtectedRoute permission="quality:view">
+                  <QualityTrends />
                 </ProtectedRoute>
               }
             />

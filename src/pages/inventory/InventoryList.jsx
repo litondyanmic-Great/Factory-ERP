@@ -62,6 +62,9 @@ export default function InventoryList() {
           <Link to="/inventory/winding" className={btnSecondary}>
             <Wind size={16} /> {t('ওয়াইন্ডিং কিউ', 'Winding Queue')}
           </Link>
+          <Link to="/inventory/accessory-tracking" className={btnSecondary}>
+            <Boxes size={16} /> {t('স্টাইল-ভিত্তিক এক্সেসরিজ', 'Style Accessory Tracking')}
+          </Link>
           {can(profile?.role, 'inventory:manage') && (
             <Link to="/inventory/new" className={btnPrimary}>
               <Plus size={16} /> {t('নতুন আইটেম', 'New Item')}

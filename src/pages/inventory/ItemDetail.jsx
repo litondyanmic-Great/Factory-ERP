@@ -307,7 +307,7 @@ function EditItemModal({ item, onClose }) {
           </Field>
           <Field label={t('একক', 'Unit')}>
             {form.type === 'yarn' ? (
-              <input className={`${inputClass} bg-paper`} value="kg" disabled />
+              <input className={`${inputClass} bg-paper`} value="lb" disabled />
             ) : (
               <select className={inputClass} value={form.unit} onChange={(e) => update('unit', e.target.value)}>
                 {COMMON_UNITS.map((u) => (

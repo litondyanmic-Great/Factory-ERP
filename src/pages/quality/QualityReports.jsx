@@ -6,7 +6,7 @@ import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, EmptyState, TrafficLight } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
-import { STAGES, DEFECT_TYPES, stageLabel, qualityTone } from '../../lib/constants';
+import { STAGES, BLOCKS, stageLabel, qualityTone } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import { useSettings } from '../../lib/settingsContext';
 
@@ -16,6 +16,7 @@ export default function QualityReports() {
   const { settings } = useSettings();
   const [checks, setChecks] = useState(null);
   const [sectionFilter, setSectionFilter] = useState('all');
+  const [blockFilter, setBlockFilter] = useState('all');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [search, setSearch] = useState('');
@@ -30,12 +31,13 @@ export default function QualityReports() {
     if (!checks) return [];
     return checks.filter((c) => {
       if (sectionFilter !== 'all' && c.section !== sectionFilter) return false;
+      if (blockFilter !== 'all' && c.block !== blockFilter) return false;
       if (from && c.date < from) return false;
       if (to && c.date > to) return false;
       if (search && !(c.styleLabel || '').toLowerCase().includes(search.toLowerCase())) return false;
       return true;
     });
-  }, [checks, sectionFilter, from, to, search]);
+  }, [checks, sectionFilter, blockFilter, from, to, search]);
 
   async function handleDelete(c) {
     const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
@@ -43,22 +45,20 @@ export default function QualityReports() {
     await deleteDoc(doc(db, 'qualityChecks', c.id));
   }
 
-  const defectLabel = (key) => {
-    const d = DEFECT_TYPES.find((x) => x.key === key);
-    return d ? t(d.label, d.labelEn) : key;
-  };
+  const defectLabel = (record, key) => (record.defectLabels && record.defectLabels[key]) || key;
 
   const exportColumns = [
     { key: 'date', label: t('তারিখ', 'Date') },
     { key: 'styleLabel', label: t('স্টাইল', 'Style') },
     { key: 'section', label: t('সেকশন', 'Section'), render: (r) => stageLabel(r.section, lang) },
     { key: 'checkedQty', label: t('চেকড কোয়ান্টিটি', 'Checked Qty') },
+    { key: 'block', label: t('ব্লক', 'Block') },
     { key: 'defectQty', label: t('ডিফেক্ট কোয়ান্টিটি', 'Defect Qty') },
     { key: 'passRate', label: t('পাস রেট %', 'Pass Rate %') },
     {
       key: 'defects',
       label: t('ডিফেক্ট বিস্তারিত', 'Defect Detail'),
-      render: (r) => Object.entries(r.defects || {}).map(([k, v]) => `${defectLabel(k)}: ${v}`).join(', '),
+      render: (r) => Object.entries(r.defects || {}).map(([k, v]) => `${defectLabel(r, k)}: ${v}`).join(', '),
     },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
@@ -82,6 +82,16 @@ export default function QualityReports() {
             {STAGES.map((s) => (
               <option key={s.key} value={s.key}>
                 {lang === 'en' ? s.labelEn : s.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t('ব্লক', 'Block')}>
+          <select value={blockFilter} onChange={(e) => setBlockFilter(e.target.value)} className={inputClass}>
+            <option value="all">{t('সব ব্লক', 'All blocks')}</option>
+            {BLOCKS.map((b) => (
+              <option key={b} value={b}>
+                {t('ব্লক', 'Block')} {b}
               </option>
             ))}
           </select>
@@ -119,6 +129,7 @@ export default function QualityReports() {
                 <th className="px-4 py-3 font-medium">{t('তারিখ', 'Date')}</th>
                 <th className="px-4 py-3 font-medium">{t('স্টাইল', 'Style')}</th>
                 <th className="px-4 py-3 font-medium">{t('সেকশন', 'Section')}</th>
+                <th className="px-4 py-3 font-medium">{t('ব্লক', 'Block')}</th>
                 <th className="px-4 py-3 font-medium">{t('চেকড', 'Checked')}</th>
                 <th className="px-4 py-3 font-medium">{t('ডিফেক্ট', 'Defects')}</th>
                 <th className="px-4 py-3 font-medium">{t('পাস রেট', 'Pass Rate')}</th>
@@ -132,6 +143,7 @@ export default function QualityReports() {
                   <td className="px-4 py-3 text-ink-soft">{c.date}</td>
                   <td className="px-4 py-3 text-ink">{c.styleLabel}</td>
                   <td className="px-4 py-3 text-ink-soft">{stageLabel(c.section, lang)}</td>
+                  <td className="px-4 py-3 text-ink-soft">{c.block || '—'}</td>
                   <td className="px-4 py-3 text-ink-soft">{c.checkedQty}</td>
                   <td className="px-4 py-3 text-ink-soft">{c.defectQty}</td>
                   <td className="px-4 py-3 font-medium text-ink">{c.passRate}%</td>

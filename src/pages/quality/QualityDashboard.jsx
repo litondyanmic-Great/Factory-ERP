@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { ClipboardCheck, FileBarChart, ShieldAlert } from 'lucide-react';
+import { ClipboardCheck, FileBarChart, ShieldAlert, TrendingUp } from 'lucide-react';
 import { db } from '../../firebase';
 import { StatCard, TrafficLight, EmptyState, btnPrimary, btnSecondary } from '../../components/ui';
 import { STAGES, stageLabel, qualityTone } from '../../lib/constants';
@@ -67,6 +67,9 @@ export default function QualityDashboard() {
           </Link>
           <Link to="/quality/reports" className={btnSecondary}>
             <FileBarChart size={16} /> {t('রিপোর্ট', 'Reports')}
+          </Link>
+          <Link to="/quality/trends" className={btnSecondary}>
+            <TrendingUp size={16} /> {t('ট্রেন্ড', 'Trends')}
           </Link>
         </div>
       </div>

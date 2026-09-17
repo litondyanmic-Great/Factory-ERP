@@ -97,12 +97,29 @@ export default function StyleDetail() {
         entryData.yarnItemName = yarnItems.find((y) => y.id === yarnItemId)?.name || '';
         entryData.yarnQty = Number(yarnQty);
       }
-      await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
+      const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
       await updateDoc(doc(db, 'styles', id), { [`stages.${stage}`]: increment(n) });
       if (entryData.yarnItemId) {
         await updateDoc(doc(db, 'inventoryItems', entryData.yarnItemId), {
           currentStock: increment(-entryData.yarnQty),
         });
+        // Also record it on this style's yarn ledger, so the "ready for
+        // knitting" balance on the Style Yarn Tracking page stays accurate.
+        // Keep a back-reference on the production entry so deleting it can
+        // clean up the matching ledger row too.
+        const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+          type: 'consumption',
+          yarnItemId: entryData.yarnItemId,
+          yarnItemName: entryData.yarnItemName,
+          styleNo: style?.styleNo || '',
+          styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+          qty: entryData.yarnQty,
+          date: entryDate,
+          notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
+          enteredBy: profile?.name || user?.email,
+          createdAt: serverTimestamp(),
+        });
+        await updateDoc(entryRef, { yarnLedgerId: ledgerRef.id });
       }
       setQty('');
       setNote('');
@@ -123,6 +140,9 @@ export default function StyleDetail() {
       await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), {
         currentStock: increment(entry.yarnQty || 0),
       });
+      if (entry.yarnLedgerId) {
+        await deleteDoc(doc(db, 'styles', id, 'yarnLedger', entry.yarnLedgerId));
+      }
     }
     await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
   }
@@ -157,7 +177,7 @@ export default function StyleDetail() {
     { key: 'stage', label: t('স্টেজ', 'Stage'), render: (r) => stageLabel(r.stage, lang) },
     { key: 'quantity', label: t('কোয়ান্টিটি', 'Quantity') },
     { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
-    { key: 'yarnQty', label: t('ইয়ার্ন খরচ (kg)', 'Yarn Used (kg)') },
+    { key: 'yarnQty', label: t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
 
@@ -296,12 +316,12 @@ export default function StyleDetail() {
                       <option value="">{t('নির্বাচন করুন', 'Select')}</option>
                       {yarnItems.map((y) => (
                         <option key={y.id} value={y.id}>
-                          {y.name} ({Number(y.currentStock).toLocaleString('en-US')} kg {t('স্টকে', 'in stock')})
+                          {y.name} ({Number(y.currentStock).toLocaleString('en-US')} lb {t('স্টকে', 'in stock')})
                         </option>
                       ))}
                     </select>
                   </Field>
-                  <Field label={t('ইয়ার্ন খরচ (kg)', 'Yarn Used (kg)')}>
+                  <Field label={t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)')}>
                     <input
                       type="number"
                       min="0"
@@ -335,7 +355,7 @@ export default function StyleDetail() {
               filename={`yarn-consumption-${style.styleNo}`}
               columns={[
                 { key: 'name', label: t('ইয়ার্ন', 'Yarn') },
-                { key: 'qty', label: t('মোট খরচ (kg)', 'Total Used (kg)') },
+                { key: 'qty', label: t('মোট খরচ (lb)', 'Total Used (lb)') },
               ]}
               rows={yarnConsumptionRows}
             />
@@ -345,7 +365,7 @@ export default function StyleDetail() {
               {yarnConsumptionRows.map((r, i) => (
                 <tr key={i} className="border-b border-line last:border-0">
                   <td className="py-2 pr-4 text-ink">{r.name}</td>
-                  <td className="py-2 text-ink-soft">{r.qty.toLocaleString('en-US')} kg</td>
+                  <td className="py-2 text-ink-soft">{r.qty.toLocaleString('en-US')} lb</td>
                 </tr>
               ))}
             </tbody>
@@ -390,7 +410,7 @@ export default function StyleDetail() {
                       {e.quantity}
                       {e.yarnItemName && (
                         <span className="ml-1 text-xs text-ink-soft">
-                          ({e.yarnItemName}: {e.yarnQty}kg)
+                          ({e.yarnItemName}: {e.yarnQty}lb)
                         </span>
                       )}
                     </td>
