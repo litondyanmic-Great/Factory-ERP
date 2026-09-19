@@ -41,6 +41,22 @@ service cloud.firestore {
       return isActive() && (myRole() == 'admin' || sectionKey in mySections());
     }
 
+    // --- Collection-group access -------------------------------------
+    // Firestore requires a SEPARATE rule (beyond the nested subcollection
+    // rule above) to permit collectionGroup() queries that read across
+    // every style's subcollection at once. Without these, WindingQueue's
+    // cross-style yarnLedger query and Dashboard's cross-style
+    // productionEntries query silently fail with permission-denied.
+    match /{path=**}/yarnLedger/{entryId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+    }
+    match /{path=**}/accessoryLedger/{entryId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+    }
+    match /{path=**}/productionEntries/{entryId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+    }
+
     // system/meta — a single doc used only to decide whether the very next
     // signup becomes the first admin. Any signed-in user may read it (the
     // signup transaction needs this); it may only ever flip from
@@ -119,7 +135,12 @@ service cloud.firestore {
           || canEnterSection('yarnStore')
           || canEnterSection('winding')
           || canEnterSection('knitting');
-        allow update, delete: if isAdmin();
+        // The Yarn Manager (store role) may update ONLY the `block` field
+        // (A-M storage location) on an entry — everything else about a
+        // ledger entry stays admin-only to edit.
+        allow update: if isAdmin()
+          || (hasRole(['admin', 'store']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['block']));
+        allow delete: if isAdmin();
       }
 
       // Style-wise accessory ledger: receive against style (chalan/
@@ -152,12 +173,12 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // zeroThreadReports/{reportId} — pre-packing zero-tolerance thread /
-    // contamination checkpoint.
+    // zeroThreadReports/{reportId} — factory-wide daily loose/uncut thread
+    // checkpoint (one entry per date, editable), NOT tied to a style.
     match /zeroThreadReports/{reportId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-      allow create: if hasRole(['admin', 'production']);
-      allow update, delete: if isAdmin();
+      allow create, update: if hasRole(['admin', 'production']);
+      allow delete: if isAdmin();
     }
   }
 }

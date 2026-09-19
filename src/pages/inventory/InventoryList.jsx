@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { collection, deleteDoc, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2, Boxes, Wind } from 'lucide-react';
+import { Plus, Trash2, Boxes, Wind, MapPin } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { btnPrimary, btnSecondary, EmptyState, Pill } from '../../components/ui';
@@ -64,6 +64,9 @@ export default function InventoryList() {
           </Link>
           <Link to="/inventory/accessory-tracking" className={btnSecondary}>
             <Boxes size={16} /> {t('স্টাইল-ভিত্তিক এক্সেসরিজ', 'Style Accessory Tracking')}
+          </Link>
+          <Link to="/inventory/yarn-blocks" className={btnSecondary}>
+            <MapPin size={16} /> {t('ইয়ার্ন ব্লক', 'Yarn Blocks')}
           </Link>
           {can(profile?.role, 'inventory:manage') && (
             <Link to="/inventory/new" className={btnPrimary}>

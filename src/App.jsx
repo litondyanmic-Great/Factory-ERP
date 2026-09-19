@@ -23,6 +23,8 @@ import QualityReports from './pages/quality/QualityReports';
 import ZeroThreadReport from './pages/quality/ZeroThreadReport';
 import QualityTrends from './pages/quality/QualityTrends';
 import StyleAccessoryTracking from './pages/inventory/StyleAccessoryTracking';
+import YarnBlockManager from './pages/inventory/YarnBlockManager';
+import ReportsCenter from './pages/ReportsCenter';
 
 export default function App() {
   return (
@@ -104,6 +106,23 @@ export default function App() {
               element={
                 <ProtectedRoute permission="inventory:view">
                   <StyleAccessoryTracking />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/inventory/yarn-blocks"
+              element={
+                <ProtectedRoute permission="inventory:view">
+                  <YarnBlockManager />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/reports"
+              element={
+                <ProtectedRoute permission="report:view">
+                  <ReportsCenter />
                 </ProtectedRoute>
               }
             />

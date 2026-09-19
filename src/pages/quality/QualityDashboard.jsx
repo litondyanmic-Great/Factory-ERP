@@ -35,7 +35,7 @@ export default function QualityDashboard() {
   const todayDefectTotal = todayChecks.reduce((s, c) => s + Number(c.defectQty || 0), 0);
   const todayPassRate = todayCheckedTotal > 0 ? ((todayCheckedTotal - todayDefectTotal) / todayCheckedTotal) * 100 : null;
 
-  const zeroThreadFails = todayZero.filter((z) => z.status === 'fail').length;
+  const zeroThreadRedToday = todayZero.filter((z) => z.status === 'red').length;
 
   // Traffic-light grid: latest entry per style+section combination (from
   // recent history, not just today) so the grid always shows something
@@ -83,9 +83,9 @@ export default function QualityDashboard() {
         <StatCard label={t('আজ চেক করা হয়েছে', 'Checked Today')} value={todayCheckedTotal.toLocaleString('en-US')} />
         <StatCard label={t('আজকের ডিফেক্ট', "Today's Defects")} value={todayDefectTotal.toLocaleString('en-US')} tone={todayDefectTotal > 0 ? 'amber' : 'ink'} />
         <StatCard
-          label={t('জিরো থ্রেড ফেইল (আজ)', 'Zero Thread Fails (Today)')}
-          value={zeroThreadFails}
-          tone={zeroThreadFails > 0 ? 'red' : 'green'}
+          label={t('জিরো থ্রেড — রেড (আজ)', 'Zero Thread — Red (Today)')}
+          value={zeroThreadRedToday}
+          tone={zeroThreadRedToday > 0 ? 'red' : 'green'}
         />
       </div>
 

@@ -140,6 +140,9 @@ export default function StyleAccessoryTracking() {
       enteredBy: profile?.name || user?.email,
       createdAt: serverTimestamp(),
     });
+    // Issuing to a production section must reduce the store's visible
+    // stock, same as yarn issues do.
+    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(-n) });
     setIssueForm({ itemId: '', section: '', qty: '', date: today(), notes: '' });
   }
 
@@ -149,6 +152,9 @@ export default function StyleAccessoryTracking() {
     await deleteDoc(doc(db, 'styles', styleId, 'accessoryLedger', entry.id));
     if (entry.type === 'receipt') {
       await updateDoc(doc(db, 'inventoryItems', entry.itemId), { currentStock: increment(-entry.qty) });
+    }
+    if (entry.type === 'issue') {
+      await updateDoc(doc(db, 'inventoryItems', entry.itemId), { currentStock: increment(entry.qty) });
     }
   }
 

@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu, ShieldCheck, Settings as SettingsIcon, Languages, ArrowLeft } from 'lucide-react';
+import { LayoutGrid, Factory, Boxes, Users, LogOut, Menu, ShieldCheck, Settings as SettingsIcon, Languages, ArrowLeft, BarChart3 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { can, departmentLabel } from '../lib/constants';
@@ -20,6 +20,7 @@ export default function Shell() {
     { to: '/production', label: t('প্রোডাকশন', 'Production'), icon: Factory, permission: 'style:view' },
     { to: '/inventory', label: t('ইনভেন্টরি', 'Inventory'), icon: Boxes, permission: 'inventory:view' },
     { to: '/quality', label: t('কোয়ালিটি', 'Quality'), icon: ShieldCheck, permission: 'quality:view' },
+    { to: '/reports', label: t('রিপোর্ট', 'Reports'), icon: BarChart3, permission: 'report:view' },
     { to: '/admin/users', label: t('ইউজার ম্যানেজমেন্ট', 'User Management'), icon: Users, permission: 'admin:only' },
     { to: '/admin/settings', label: t('সেটিংস', 'Settings'), icon: SettingsIcon, permission: 'admin:only' },
   ];

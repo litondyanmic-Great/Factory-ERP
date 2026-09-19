@@ -61,7 +61,14 @@ export default function NewItem() {
           createdAt: serverTimestamp(),
         });
       }
-      navigate(`/inventory/${docRef.id}`);
+      // A brand-new yarn or accessory item's very next step is almost
+      // always "place an order for this against a style" — send the user
+      // straight there instead of an empty item detail page.
+      if (form.type === 'yarn') {
+        navigate('/inventory/yarn-tracking');
+      } else {
+        navigate('/inventory/accessory-tracking');
+      }
     } catch (err) {
       setError(t('আইটেম তৈরি করা যায়নি, আবার চেষ্টা করুন।', 'Could not create item, please try again.'));
     } finally {
@@ -73,7 +80,12 @@ export default function NewItem() {
     <div className="mx-auto max-w-xl space-y-6">
       <div>
         <h1 className="font-display text-2xl font-semibold text-ink">{t('নতুন আইটেম', 'New Item')}</h1>
-        <p className="mt-1 text-sm text-ink-soft">{t('ইয়ার্ন অথবা এক্সেসরিজ আইটেম যোগ করুন।', 'Add a yarn or accessory item.')}</p>
+        <p className="mt-1 text-sm text-ink-soft">
+          {t(
+            'ইয়ার্ন অথবা এক্সেসরিজ আইটেম যোগ করুন। এরপর সরাসরি স্টাইল-ভিত্তিক ট্র্যাকিং পাতায় নিয়ে যাওয়া হবে, যেখানে একটি স্টাইল সার্চ করে এই আইটেমের বিপরীতে অর্ডার/রিসিভ এন্ট্রি দিতে পারবেন।',
+            'Add a yarn or accessory item. You will then be taken straight to the style-wise tracking page, where you can search a style and place an order/receive entry against this item.'
+          )}
+        </p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-4 rounded-lg border border-line bg-surface p-6">

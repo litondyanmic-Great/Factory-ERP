@@ -191,6 +191,11 @@ export default function StyleYarnTracking() {
       date: issueForm.date,
       notes: issueForm.notes || '',
     });
+    // Issuing from the Yarn Store must reduce the store's visible stock —
+    // this is the master inventoryItems.currentStock figure (receipts add
+    // to it, issues subtract from it), separate from the style-scoped
+    // "atStore" ledger balance shown in the table below.
+    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(-n) });
     setIssueForm({ yarnItemId: '', destination: 'winding', qty: '', date: today(), notes: '' });
   }
 
@@ -198,9 +203,14 @@ export default function StyleYarnTracking() {
     const ok = window.confirm(t('এই লেজার এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this ledger entry?'));
     if (!ok) return;
     await deleteDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id));
-    // Receipts also pushed stock into overall inventory — reverse that too.
+    // Receipts pushed stock into overall inventory — reverse that too.
     if (entry.type === 'receipt') {
       await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), { currentStock: increment(-entry.qty) });
+    }
+    // Issues (to winding or direct to knitting) pulled stock OUT of the
+    // store — deleting a wrong issue entry must give that stock back.
+    if (entry.type === 'issueToWinding' || entry.type === 'issueToKnitting') {
+      await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), { currentStock: increment(entry.qty) });
     }
   }
 
