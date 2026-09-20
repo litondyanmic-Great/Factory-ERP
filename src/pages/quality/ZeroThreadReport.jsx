@@ -16,13 +16,13 @@ import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Pill, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
-import { can } from '../../lib/constants';
+import { can, STAGES, stageLabel } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
-// Zero Thread is a factory-wide daily checkpoint (NOT tied to any one
-// style): a fixed sample (80 pcs by default) is inspected every day for
-// loose-thread and uncut-thread defects. The combined defect count decides
-// a traffic-light status for that day:
+// Zero Thread is a daily checkpoint done PER SECTION (not tied to any one
+// style): a fixed sample (80 pcs by default) is inspected every day, per
+// section, for loose-thread and uncut-thread defects. The combined defect
+// count decides a traffic-light status for that day + section:
 //   0-4  -> green   5-8 -> yellow   9+  -> red
 const GREEN_MAX = 4;
 const YELLOW_MAX = 8;
@@ -33,13 +33,26 @@ function statusFor(total) {
   return 'red';
 }
 
+const DOT_CLASS = { green: 'bg-green', yellow: 'bg-amber', red: 'bg-red' };
 const STATUS_TONE = { green: 'green', yellow: 'amber', red: 'red' };
 
 function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
+function dateKey(date, section) {
+  return `${date}__${section}`;
+}
+function lastNDays(n) {
+  const out = [];
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    out.push(d.toISOString().slice(0, 10));
+  }
+  return out;
+}
 
-const BLANK = { date: todayStr(), checkedQty: '80', looseThreadQty: '0', uncutThreadQty: '0', remarks: '' };
+const BLANK = { date: todayStr(), section: STAGES[0].key, checkedQty: '80', looseThreadQty: '0', uncutThreadQty: '0', remarks: '' };
 
 export default function ZeroThreadReport() {
   const { user, profile } = useAuth();
@@ -52,12 +65,14 @@ export default function ZeroThreadReport() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  const [calendarSection, setCalendarSection] = useState(STAGES[0].key);
   const [monthCursor, setMonthCursor] = useState(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
   const [rangeFrom, setRangeFrom] = useState('');
   const [rangeTo, setRangeTo] = useState('');
+  const [tableSection, setTableSection] = useState('all');
 
   const canEnter = can(profile?.role, 'quality:entry');
 
@@ -67,22 +82,24 @@ export default function ZeroThreadReport() {
     return unsub;
   }, []);
 
-  const byDate = useMemo(() => {
+  const byKey = useMemo(() => {
     const map = new Map();
-    (reports || []).forEach((r) => map.set(r.date, r));
+    (reports || []).forEach((r) => map.set(dateKey(r.date, r.section || STAGES[0].key), r));
     return map;
   }, [reports]);
 
   const filtered = useMemo(() => {
-    if (!rangeFrom && !rangeTo) return reports || [];
-    return (reports || []).filter((r) => (!rangeFrom || r.date >= rangeFrom) && (!rangeTo || r.date <= rangeTo));
-  }, [reports, rangeFrom, rangeTo]);
+    let rows = reports || [];
+    if (tableSection !== 'all') rows = rows.filter((r) => (r.section || STAGES[0].key) === tableSection);
+    if (rangeFrom || rangeTo) rows = rows.filter((r) => (!rangeFrom || r.date >= rangeFrom) && (!rangeTo || r.date <= rangeTo));
+    return rows;
+  }, [reports, tableSection, rangeFrom, rangeTo]);
 
-  function openNew(dateStr) {
-    const existing = dateStr ? byDate.get(dateStr) : null;
+  function openNew(section, dateStr) {
+    const existing = byKey.get(dateKey(dateStr, section));
     if (existing) return openEdit(existing);
     setEditingId(null);
-    setForm({ ...BLANK, date: dateStr || todayStr() });
+    setForm({ ...BLANK, section, date: dateStr || todayStr() });
     setError('');
     setModalOpen(true);
   }
@@ -91,6 +108,7 @@ export default function ZeroThreadReport() {
     setEditingId(r.id);
     setForm({
       date: r.date,
+      section: r.section || STAGES[0].key,
       checkedQty: String(r.checkedQty),
       looseThreadQty: String(r.looseThreadQty),
       uncutThreadQty: String(r.uncutThreadQty),
@@ -106,8 +124,8 @@ export default function ZeroThreadReport() {
     const checkedQty = Number(form.checkedQty);
     const loose = Number(form.looseThreadQty || 0);
     const uncut = Number(form.uncutThreadQty || 0);
-    if (!form.date) {
-      setError(t('তারিখ দিন।', 'Enter a date.'));
+    if (!form.date || !form.section) {
+      setError(t('তারিখ ও সেকশন দিন।', 'Enter date and section.'));
       return;
     }
     if (!checkedQty || checkedQty <= 0) {
@@ -115,20 +133,15 @@ export default function ZeroThreadReport() {
       return;
     }
     if (loose + uncut > checkedQty) {
-      setError(
-        t('লুজ থ্রেড + আনকাট থ্রেড মোট চেকড কোয়ান্টিটির বেশি হতে পারে না।', 'Loose + uncut thread total cannot exceed checked quantity.')
-      );
+      setError(t('লুজ থ্রেড + আনকাট থ্রেড মোট চেকড কোয়ান্টিটির বেশি হতে পারে না।', 'Loose + uncut thread total cannot exceed checked quantity.'));
       return;
     }
-    // One entry per date: submitting for a date that already has an entry
-    // (and isn't the one currently being edited) updates that entry in
-    // place instead of creating a duplicate.
-    const existing = byDate.get(form.date);
+    const existing = byKey.get(dateKey(form.date, form.section));
     const targetId = editingId || (existing && existing.id) || null;
-
     const total = loose + uncut;
     const payload = {
       date: form.date,
+      section: form.section,
       checkedQty,
       looseThreadQty: loose,
       uncutThreadQty: uncut,
@@ -137,7 +150,6 @@ export default function ZeroThreadReport() {
       remarks: form.remarks || '',
       enteredBy: profile?.name || user?.email,
     };
-
     setBusy(true);
     try {
       if (targetId) {
@@ -161,20 +173,17 @@ export default function ZeroThreadReport() {
 
   const exportColumns = [
     { key: 'date', label: t('তারিখ', 'Date') },
+    { key: 'section', label: t('সেকশন', 'Section'), render: (r) => stageLabel(r.section || STAGES[0].key, lang) },
     { key: 'checkedQty', label: t('চেকড কোয়ান্টিটি', 'Checked Qty') },
     { key: 'looseThreadQty', label: t('লুজ থ্রেড', 'Loose Thread') },
     { key: 'uncutThreadQty', label: t('আনকাট থ্রেড', 'Uncut Thread') },
     { key: 'totalDefectQty', label: t('মোট', 'Total') },
-    {
-      key: 'status',
-      label: t('অবস্থা', 'Status'),
-      render: (r) => ({ green: t('গ্রিন', 'Green'), yellow: t('ইয়েলো', 'Yellow'), red: t('রেড', 'Red') }[r.status]),
-    },
+    { key: 'status', label: t('অবস্থা', 'Status'), render: (r) => ({ green: t('গ্রিন', 'Green'), yellow: t('ইয়েলো', 'Yellow'), red: t('রেড', 'Red') }[r.status]) },
     { key: 'remarks', label: t('মন্তব্য', 'Remarks') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
 
-  // --- Calendar grid for the selected month --------------------------
+  // --- Calendar grid for the selected month + section ------------------
   const year = monthCursor.getFullYear();
   const month = monthCursor.getMonth();
   const firstWeekday = new Date(year, month, 1).getDay();
@@ -184,15 +193,17 @@ export default function ZeroThreadReport() {
   for (let i = 0; i < firstWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
 
+  const last14 = lastNDays(14);
+
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-5xl space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="font-display text-2xl font-semibold text-ink">{t('জিরো থ্রেড রিপোর্ট', 'Zero Thread Report')}</h1>
           <p className="mt-1 text-sm text-ink-soft">
             {t(
-              'প্রতিদিন নির্দিষ্ট সংখ্যক পিস (ডিফল্ট ৮০) চেক করে লুজ থ্রেড ও আনকাট থ্রেড গণনা করা হয় — পুরো ফ্যাক্টরির জন্য, কোনো একক স্টাইলের জন্য নয়। মোট ৪ বা কম হলে গ্রিন, ৫-৮ হলে ইয়েলো, ৯ বা তার বেশি হলে রেড।',
-              'A fixed sample (default 80 pcs) is checked every day for loose-thread and uncut-thread defects, factory-wide — not tied to one style. Total 4 or fewer is green, 5-8 is yellow, 9 or more is red.'
+              'প্রতিটি সেকশনের জন্য আলাদা বোর্ড — প্রতিদিন নির্দিষ্ট সংখ্যক পিস (ডিফল্ট ৮০) চেক করে লুজ থ্রেড ও আনকাট থ্রেড গণনা করা হয়। মোট ৪ বা কম হলে গ্রিন, ৫-৮ হলে ইয়েলো, ৯ বা তার বেশি হলে রেড।',
+              'A separate board per section — a fixed sample (default 80 pcs) is checked every day for loose-thread and uncut-thread defects. Total 4 or fewer is green, 5-8 is yellow, 9 or more is red.'
             )}
           </p>
         </div>
@@ -201,22 +212,58 @@ export default function ZeroThreadReport() {
         </Link>
       </div>
 
-      {canEnter && (
-        <button onClick={() => openNew(todayStr())} className={btnPrimary}>
-          {t("আজকের চেক এন্ট্রি দিন", "Log Today's Check")}
-        </button>
-      )}
+      {/* Per-section boards: compact 14-day colored-circle strips */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {STAGES.map((s) => {
+          const todayEntry = byKey.get(dateKey(todayStr(), s.key));
+          return (
+            <div key={s.key} className="rounded-lg border border-line bg-surface p-4">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="font-display text-sm font-semibold text-ink">{lang === 'en' ? s.labelEn : s.label}</p>
+                {canEnter && (
+                  <button
+                    onClick={() => openNew(s.key, todayStr())}
+                    className="text-xs font-medium text-indigo hover:underline"
+                  >
+                    {todayEntry ? t('আজকেরটা দেখুন', "View today's") : t('আজকেরটা যোগ করুন', 'Log today')}
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {last14.map((d) => {
+                  const entry = byKey.get(dateKey(d, s.key));
+                  return (
+                    <button
+                      key={d}
+                      title={`${d}${entry ? ` — ${entry.totalDefectQty} ${t('ডিফেক্ট', 'defects')}` : ''}`}
+                      onClick={() => (canEnter ? openNew(s.key, d) : entry && openEdit(entry))}
+                      className={`h-4 w-4 rounded-full transition-transform hover:scale-125 ${entry ? DOT_CLASS[entry.status] : 'bg-line'}`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
 
-      {/* Calendar */}
+      {/* Detailed calendar for one section at a time */}
       <div className="rounded-lg border border-line bg-surface p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <button onClick={() => setMonthCursor(new Date(year, month - 1, 1))} className="rounded-md p-1.5 hover:bg-paper">
-            <ChevronLeft size={18} />
-          </button>
-          <h2 className="font-display text-sm font-semibold text-ink">{monthLabel}</h2>
-          <button onClick={() => setMonthCursor(new Date(year, month + 1, 1))} className="rounded-md p-1.5 hover:bg-paper">
-            <ChevronRight size={18} />
-          </button>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setMonthCursor(new Date(year, month - 1, 1))} className="rounded-md p-1.5 hover:bg-paper">
+              <ChevronLeft size={18} />
+            </button>
+            <h2 className="font-display text-sm font-semibold text-ink">{monthLabel}</h2>
+            <button onClick={() => setMonthCursor(new Date(year, month + 1, 1))} className="rounded-md p-1.5 hover:bg-paper">
+              <ChevronRight size={18} />
+            </button>
+          </div>
+          <select value={calendarSection} onChange={(e) => setCalendarSection(e.target.value)} className={`${inputClass} !w-auto text-xs`}>
+            {STAGES.map((s) => (
+              <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+            ))}
+          </select>
         </div>
         <div className="grid grid-cols-7 gap-1.5 text-center text-xs text-ink-soft">
           {(lang === 'en' ? ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'] : ['রবি', 'সোম', 'মঙ্গল', 'বুধ', 'বৃহ', 'শুক্র', 'শনি']).map((d) => (
@@ -225,18 +272,17 @@ export default function ZeroThreadReport() {
           {cells.map((d, i) => {
             if (!d) return <div key={`e${i}`} />;
             const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-            const entry = byDate.get(dateStr);
-            const dotClass = entry
-              ? { green: 'bg-green text-white', yellow: 'bg-amber text-white', red: 'bg-red text-white' }[entry.status]
-              : 'bg-paper text-ink-soft hover:bg-line/60';
+            const entry = byKey.get(dateKey(dateStr, calendarSection));
             return (
               <button
                 key={dateStr}
-                onClick={() => (canEnter ? openNew(dateStr) : entry && openEdit(entry))}
+                onClick={() => (canEnter ? openNew(calendarSection, dateStr) : entry && openEdit(entry))}
                 title={entry ? `${entry.totalDefectQty} ${t('ডিফেক্ট', 'defects')}` : ''}
-                className={`flex aspect-square items-center justify-center rounded-md text-sm font-medium transition-colors ${dotClass}`}
+                className="flex aspect-square items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-paper"
               >
-                {d}
+                <span className={`flex h-7 w-7 items-center justify-center rounded-full ${entry ? `${DOT_CLASS[entry.status]} text-white` : 'text-ink-soft'}`}>
+                  {d}
+                </span>
               </button>
             );
           })}
@@ -253,6 +299,12 @@ export default function ZeroThreadReport() {
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="font-display text-sm font-semibold text-ink">{t('সব রিপোর্ট', 'All Reports')}</h2>
           <div className="flex flex-wrap items-center gap-2">
+            <select value={tableSection} onChange={(e) => setTableSection(e.target.value)} className={`${inputClass} !w-auto !py-1.5 text-xs`}>
+              <option value="all">{t('সব সেকশন', 'All Sections')}</option>
+              {STAGES.map((s) => (
+                <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+              ))}
+            </select>
             <input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} className={`${inputClass} !w-36 !py-1.5 text-xs`} />
             <span className="text-xs text-ink-soft">{t('থেকে', 'to')}</span>
             <input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} className={`${inputClass} !w-36 !py-1.5 text-xs`} />
@@ -265,10 +317,11 @@ export default function ZeroThreadReport() {
           <EmptyState title={t('এখনো কোনো রিপোর্ট নেই', 'No reports yet')} />
         ) : (
           <div className="scroll-thin overflow-x-auto">
-            <table className="w-full min-w-[640px] text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-line text-left text-xs text-ink-soft">
                   <th className="py-2 pr-4 font-medium">{t('তারিখ', 'Date')}</th>
+                  <th className="py-2 pr-4 font-medium">{t('সেকশন', 'Section')}</th>
                   <th className="py-2 pr-4 font-medium">{t('চেকড', 'Checked')}</th>
                   <th className="py-2 pr-4 font-medium">{t('লুজ', 'Loose')}</th>
                   <th className="py-2 pr-4 font-medium">{t('আনকাট', 'Uncut')}</th>
@@ -281,6 +334,7 @@ export default function ZeroThreadReport() {
                 {filtered.map((r) => (
                   <tr key={r.id} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{r.date}</td>
+                    <td className="py-2 pr-4 text-ink">{stageLabel(r.section || STAGES[0].key, lang)}</td>
                     <td className="py-2 pr-4 text-ink-soft">{r.checkedQty}</td>
                     <td className="py-2 pr-4 text-ink-soft">{r.looseThreadQty}</td>
                     <td className="py-2 pr-4 text-ink-soft">{r.uncutThreadQty}</td>
@@ -316,8 +370,15 @@ export default function ZeroThreadReport() {
         <Modal title={editingId ? t('এন্ট্রি এডিট করুন', 'Edit Entry') : t('নতুন এন্ট্রি', 'New Entry')} onClose={() => setModalOpen(false)}>
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
+              <Field label={t('সেকশন *', 'Section *')}>
+                <select value={form.section} onChange={(e) => setForm((f) => ({ ...f, section: e.target.value }))} className={inputClass} disabled={!!editingId}>
+                  {STAGES.map((s) => (
+                    <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+                  ))}
+                </select>
+              </Field>
               <Field label={t('তারিখ *', 'Date *')}>
-                <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} disabled={!!editingId} />
               </Field>
               <Field label={t('মোট চেকড কোয়ান্টিটি *', 'Total Checked Quantity *')}>
                 <input type="number" min="1" value={form.checkedQty} onChange={(e) => setForm((f) => ({ ...f, checkedQty: e.target.value }))} className={inputClass} />

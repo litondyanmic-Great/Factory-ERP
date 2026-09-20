@@ -62,13 +62,35 @@ function tableHtml(columns, rows) {
   return `<table style="border-collapse:collapse;width:100%;"><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>`;
 }
 
-export function exportToExcel({ filename, title, subtitle, columns, rows, settings, lang }) {
+// Renders either one plain table (columns/rows passed directly — the
+// original single-table API every existing caller uses) or, when
+// `sections` is passed instead, several labeled tables stacked in one
+// document — used for "everything about this style in one sheet" style
+// reports that need several distinct tables (yarn, accessories,
+// production, etc.) rather than one flat grid.
+function bodyHtml({ columns, rows, sections }) {
+  if (sections && sections.length) {
+    return sections
+      .map(
+        (s) => `
+          <div style="margin-top:22px;">
+            <div style="font-size:13px;font-weight:700;color:#2B4570;border-bottom:1px solid #E4E1D8;padding-bottom:4px;margin-bottom:8px;">${escapeHtml(s.heading)}</div>
+            ${s.rows && s.rows.length ? tableHtml(s.columns, s.rows) : `<div style="font-size:12px;color:#5B5F68;">${escapeHtml(s.emptyLabel || 'No data')}</div>`}
+          </div>
+        `
+      )
+      .join('');
+  }
+  return tableHtml(columns, rows);
+}
+
+export function exportToExcel({ filename, title, subtitle, columns, rows, sections, settings, lang }) {
   const html = `
     <html><head><meta charset="UTF-8"></head>
     <body>
       <div style="font-family:sans-serif;">
         ${letterheadHtml(settings, lang, title, subtitle)}
-        ${tableHtml(columns, rows)}
+        ${bodyHtml({ columns, rows, sections })}
       </div>
     </body></html>
   `;
@@ -83,7 +105,7 @@ export function exportToExcel({ filename, title, subtitle, columns, rows, settin
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
-export function exportToPDF({ filename, title, subtitle, columns, rows, settings, lang }) {
+export function exportToPDF({ filename, title, subtitle, columns, rows, sections, settings, lang }) {
   const win = window.open('', '_blank', 'width=900,height=700');
   if (!win) {
     alert(lang === 'en' ? 'Please allow pop-ups to export PDF.' : 'PDF ডাউনলোডের জন্য পপ-আপ অনুমতি দিন।');
@@ -101,7 +123,7 @@ export function exportToPDF({ filename, title, subtitle, columns, rows, settings
     </head>
     <body>
       ${letterheadHtml(settings, lang, title, subtitle)}
-      ${tableHtml(columns, rows)}
+      ${bodyHtml({ columns, rows, sections })}
       <script>
         window.onload = function () {
           window.print();

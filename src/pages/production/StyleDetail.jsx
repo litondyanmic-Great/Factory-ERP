@@ -29,6 +29,7 @@ export default function StyleDetail() {
   const navigate = useNavigate();
   const [style, setStyle] = useState(undefined);
   const [entries, setEntries] = useState(null);
+  const [entriesStageFilter, setEntriesStageFilter] = useState('all');
   const [yarnItems, setYarnItems] = useState([]);
   const [yarnLedger, setYarnLedger] = useState([]);
 
@@ -267,9 +268,14 @@ export default function StyleDetail() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
-      <Link to="/production" className="inline-flex items-center gap-1 text-sm text-ink-soft hover:text-ink">
-        <ArrowLeft size={16} /> {t('সব স্টাইল', 'All Styles')}
-      </Link>
+      <div className="flex items-center justify-between">
+        <Link to="/production" className="inline-flex items-center gap-1 text-sm text-ink-soft hover:text-ink">
+          <ArrowLeft size={16} /> {t('সব স্টাইল', 'All Styles')}
+        </Link>
+        <Link to={`/production/${id}/report`} className="text-sm font-medium text-indigo hover:underline">
+          {t('সম্পূর্ণ রিপোর্ট দেখুন →', 'View Full Report →')}
+        </Link>
+      </div>
 
       <div className="rounded-lg border border-line bg-surface p-5">
         <div className="flex flex-wrap items-start justify-between gap-4">
@@ -327,7 +333,13 @@ export default function StyleDetail() {
       )}
 
       <div className="rounded-lg border border-line bg-surface p-5">
-        <h2 className="mb-4 font-display text-sm font-semibold text-ink">{t('স্টেজ-ভিত্তিক অগ্রগতি', 'Stage-wise Progress')}</h2>
+        <h2 className="mb-1 font-display text-sm font-semibold text-ink">{t('স্টেজ-ভিত্তিক অগ্রগতি', 'Stage-wise Progress')}</h2>
+        <p className="mb-4 text-xs text-ink-soft">
+          {t(
+            'একটি স্টেজে এন্ট্রি দেওয়া মানেই সেটা পরের স্টেজের জন্য স্বয়ংক্রিয়ভাবে "পাঠানো" হয়ে যায় — যেমন নিটিং ১০০ পিস করলে লিংকিং সর্বোচ্চ ১০০ পিস এন্ট্রি দিতে পারবে, তার বেশি না। "WIP" ব্যাজ দেখায় আগের স্টেজ থেকে কত পিস এখনো এই স্টেজে আসেনি ঢোকানো — অর্থাৎ বাকি আছে।',
+            'Logging an entry at one stage automatically "sends" it forward to the next — e.g. once Knitting has done 100 pcs, Linking can log at most 100 pcs, no more. The "WIP" badge shows how much has been sent from the previous stage but not yet entered here.'
+          )}
+        </p>
         <div className="space-y-4">
           {STAGES.map((s, i) => {
             const done = style.stages?.[s.key] || 0;
@@ -488,20 +500,28 @@ export default function StyleDetail() {
       )}
 
       <div className="rounded-lg border border-line bg-surface p-5">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-display text-sm font-semibold text-ink">{t('সাম্প্রতিক এন্ট্রি', 'Recent Entries')}</h2>
-          <ExportBar
-            small
-            title={t('প্রোডাকশন এন্ট্রি', 'Production Entries')}
-            subtitle={`${style.styleNo} · ${style.buyer}`}
-            filename={`production-entries-${style.styleNo}`}
-            columns={entryExportColumns}
-            rows={entries || []}
-          />
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+          <h2 className="font-display text-sm font-semibold text-ink">{t('সাম্প্রতিক এন্ট্রি (কবে কোন স্টেজে কত)', 'Recent Entries (when, which stage, how much)')}</h2>
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={entriesStageFilter} onChange={(e) => setEntriesStageFilter(e.target.value)} className={`${inputClass} !w-auto !py-1.5 text-xs`}>
+              <option value="all">{t('সব স্টেজ', 'All Stages')}</option>
+              {STAGES.map((s) => (
+                <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+              ))}
+            </select>
+            <ExportBar
+              small
+              title={t('প্রোডাকশন এন্ট্রি', 'Production Entries')}
+              subtitle={`${style.styleNo} · ${style.buyer}`}
+              filename={`production-entries-${style.styleNo}`}
+              columns={entryExportColumns}
+              rows={entries || []}
+            />
+          </div>
         </div>
         {entries === null ? (
           <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>
-        ) : entries.length === 0 ? (
+        ) : entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).length === 0 ? (
           <EmptyState title={t('এখনো কোনো এন্ট্রি নেই', 'No entries yet')} />
         ) : (
           <div className="scroll-thin overflow-x-auto">
@@ -516,7 +536,7 @@ export default function StyleDetail() {
                 </tr>
               </thead>
               <tbody>
-                {entries.map((e) => (
+                {entries.filter((e) => entriesStageFilter === 'all' || e.stage === entriesStageFilter).map((e) => (
                   <tr key={e.id} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
                     <td className="py-2 pr-4 text-ink">{stageLabel(e.stage, lang)}</td>

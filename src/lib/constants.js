@@ -45,7 +45,30 @@ export const DEPARTMENTS = [
   { key: 'merchandising', label: 'মার্চেন্ডাইজিং', labelEn: 'Merchandising' },
   { key: 'production', label: 'প্রোডাকশন', labelEn: 'Production' },
   { key: 'store', label: 'স্টোর / ইনভেন্টরি', labelEn: 'Store / Inventory' },
+  { key: 'gpq', label: 'GPQ (গ্রুপ কোয়ালিটি)', labelEn: 'GPQ (Group Quality)' },
+  { key: 'ie', label: 'IE (ইন্ডাস্ট্রিয়াল ইঞ্জিনিয়ারিং)', labelEn: 'IE (Industrial Engineering)' },
 ];
+
+// Areas an admin can grant a non-admin user elevated ("admin-like": edit,
+// delete, manage-anything) rights in, one area at a time — this is how
+// GPQ / IE staff get broader access in the specific modules they own,
+// without having to be made full admins or having their exact needs
+// hardcoded into the role table below. Set via users/{uid}.adminAreas.
+export const ADMIN_AREAS = [
+  { key: 'quality', label: 'কোয়ালিটি', labelEn: 'Quality' },
+  { key: 'production', label: 'প্রোডাকশন', labelEn: 'Production' },
+  { key: 'inventory', label: 'ইনভেন্টরি', labelEn: 'Inventory' },
+  { key: 'reports', label: 'রিপোর্ট', labelEn: 'Reports' },
+];
+
+// True if this person has admin-level rights (edit/delete/manage) within
+// the given area — either because they're a full admin, or because an
+// admin specifically granted them that area via adminAreas.
+export function hasAreaAdmin(profile, area) {
+  if (!profile) return false;
+  if (profile.role === 'admin') return true;
+  return Array.isArray(profile.adminAreas) && profile.adminAreas.includes(area);
+}
 
 export function departmentLabel(key, lang = 'bn') {
   const d = DEPARTMENTS.find((x) => x.key === key);
@@ -117,6 +140,26 @@ export function can(role, action) {
       'winding:entry',
       'yarnStore:entry',
       'accessories:entry',
+      'report:view',
+    ],
+    // GPQ (Group Quality): broad visibility + entry rights across quality
+    // and production, elevated further per-area via adminAreas above.
+    gpq: [
+      'style:view',
+      'production:entry',
+      'quality:entry',
+      'quality:view',
+      'inventory:view',
+      'report:view',
+    ],
+    // IE (Industrial Engineering): style/production/report visibility and
+    // style editing (capacity, GG, order qty corrections etc.), elevated
+    // further per-area via adminAreas above.
+    ie: [
+      'style:view',
+      'style:edit',
+      'inventory:view',
+      'quality:view',
       'report:view',
     ],
   };

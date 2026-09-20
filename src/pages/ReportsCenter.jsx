@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, doc, onSnapshot, query } from 'firebase/firestore';
+import { Link } from 'react-router-dom';
 import { db } from '../firebase';
 import { Field, inputClass, btnSecondary, EmptyState } from '../components/ui';
 import ExportBar from '../components/ExportBar';
@@ -165,14 +166,19 @@ export default function ReportsCenter() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
-      <div>
-        <h1 className="font-display text-2xl font-semibold text-ink">{t('রিপোর্ট সেন্টার', 'Reports Center')}</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          {t(
-            'নির্দিষ্ট তারিখ বা রেঞ্জ অনুযায়ী ইয়ার্ন, প্রোডাকশন ও WIP-এর সম্পূর্ণ রিপোর্ট — একটি স্টাইলের জন্য অথবা সব স্টাইল একসাথে।',
-            'A complete yarn, production and WIP report for any date or range — for one style, or all styles combined.'
-          )}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-semibold text-ink">{t('রিপোর্ট সেন্টার', 'Reports Center')}</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            {t(
+              'নির্দিষ্ট তারিখ বা রেঞ্জ অনুযায়ী ইয়ার্ন, প্রোডাকশন ও WIP-এর সম্পূর্ণ রিপোর্ট — একটি স্টাইলের জন্য অথবা সব স্টাইল একসাথে।',
+              'A complete yarn, production and WIP report for any date or range — for one style, or all styles combined.'
+            )}
+          </p>
+        </div>
+        <Link to="/reports/daily-sheet" className={btnSecondary}>
+          {t('দৈনিক প্রোডাকশন শিট (ম্যাট্রিক্স)', 'Daily Production Sheet (Matrix)')}
+        </Link>
       </div>
 
       <div className="rounded-lg border border-line bg-surface p-5">

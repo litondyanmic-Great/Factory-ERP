@@ -17,7 +17,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, EmptyState } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { can } from '../../lib/constants';
+import { can, hasAreaAdmin } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const LEDGER_LABELS = {
@@ -39,7 +39,7 @@ export default function StyleYarnTracking() {
 
   const [orderForm, setOrderForm] = useState({ yarnItemId: '', supplier: '', qty: '', date: today(), notes: '' });
   const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', date: today(), notes: '' });
-  const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', qty: '', date: today(), notes: '' });
+  const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
   const [error, setError] = useState('');
 
   function today() {
@@ -106,6 +106,29 @@ export default function StyleYarnTracking() {
       readyForKnitting: b.issuedKnitting + b.windingToKnitting - b.consumed,
     }));
   }, [ledger]);
+
+  // Per-block balance for a given yarn item: how much of THIS style's yarn
+  // is physically sitting in each block right now (received into that
+  // block, minus whatever's already been issued out of that same block).
+  // This is what makes "issue" draw down a specific block instead of just
+  // a generic store total.
+  const blockBalancesFor = (yarnItemId) => {
+    const map = new Map();
+    (ledger || [])
+      .filter((e) => e.yarnItemId === yarnItemId)
+      .forEach((e) => {
+        const q = Number(e.qty || 0);
+        if (e.type === 'receipt' && e.block) {
+          map.set(e.block, (map.get(e.block) || 0) + q);
+        }
+        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting') && e.block) {
+          map.set(e.block, (map.get(e.block) || 0) - q);
+        }
+      });
+    return Array.from(map.entries())
+      .map(([block, qty]) => ({ block, qty }))
+      .filter((b) => b.qty > 0.001);
+  };
 
   const canManage = can(profile?.role, 'inventory:manage');
 
@@ -178,16 +201,25 @@ export default function StyleYarnTracking() {
       setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
       return;
     }
-    const bal = balances.find((b) => b.yarnItemId === item.id);
-    const atStore = bal?.atStore || 0;
-    if (n > atStore + 0.001) {
-      setError(t(`স্টোরে বর্তমানে ${atStore.toFixed(2)} lb আছে, এর বেশি ইস্যু করা যাবে না।`, `Only ${atStore.toFixed(2)} lb available at store — cannot issue more.`));
+    if (!issueForm.block) {
+      setError(t('কোন ব্লক থেকে ইয়ার্ন নেওয়া হচ্ছে তা নির্বাচন করুন।', 'Select which block this yarn is being taken from.'));
+      return;
+    }
+    const blockBal = blockBalancesFor(item.id).find((b) => b.block === issueForm.block)?.qty || 0;
+    if (n > blockBal + 0.001) {
+      setError(
+        t(
+          `ব্লক ${issueForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি ইস্যু করা যাবে না।`,
+          `Block ${issueForm.block} currently has ${blockBal.toFixed(2)} lb — cannot issue more than that.`
+        )
+      );
       return;
     }
     await addLedgerEntry(issueForm.destination === 'winding' ? 'issueToWinding' : 'issueToKnitting', {
       yarnItemId: item.id,
       yarnItemName: item.name,
       qty: n,
+      block: issueForm.block,
       date: issueForm.date,
       notes: issueForm.notes || '',
     });
@@ -196,11 +228,16 @@ export default function StyleYarnTracking() {
     // to it, issues subtract from it), separate from the style-scoped
     // "atStore" ledger balance shown in the table below.
     await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(-n) });
-    setIssueForm({ yarnItemId: '', destination: 'winding', qty: '', date: today(), notes: '' });
+    setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
   }
 
   async function handleDeleteEntry(entry) {
-    const ok = window.confirm(t('এই লেজার এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this ledger entry?'));
+    const ok = window.confirm(
+      t(
+        `⚠️ সতর্কতা: এই এন্ট্রি মুছে ফেললে এই ইয়ার্নের সব ব্যালেন্স (স্টোর, ওয়াইন্ডিং, নিটিং-প্রস্তুত, ব্লক) স্বয়ংক্রিয়ভাবে পুনরায় হিসাব হবে — অন্য কোনো এন্ট্রি এই মুছে ফেলা এন্ট্রির উপর ভিত্তি করে দেওয়া হয়ে থাকলে ব্যালেন্স ঋণাত্মক (নেগেটিভ) দেখাতে পারে। তারপরও মুছে ফেলতে চান?`,
+        `⚠️ Warning: deleting this entry recalculates ALL balances for this yarn (store, winding, ready-for-knitting, block) automatically — if any later entry depended on this one, a balance may now show negative. Still delete?`
+      )
+    );
     if (!ok) return;
     await deleteDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id));
     // Receipts pushed stock into overall inventory — reverse that too.
@@ -219,6 +256,7 @@ export default function StyleYarnTracking() {
     { key: 'type', label: t('ধরন', 'Type'), render: (r) => t(LEDGER_LABELS[r.type]?.bn, LEDGER_LABELS[r.type]?.en) },
     { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
     { key: 'qty', label: t('কোয়ান্টিটি (lb)', 'Quantity (lb)') },
+    { key: 'block', label: t('ব্লক', 'Block') },
     { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
     { key: 'chalanNo', label: t('চালান নং', 'Chalan No.') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
@@ -327,6 +365,25 @@ export default function StyleYarnTracking() {
                     <option value="knitting">{t('সরাসরি নিটিং সেকশন', 'Direct to Knitting Section')}</option>
                   </select>
                 </Field>
+                <Field label={t('কোন ব্লক থেকে *', 'From Which Block *')}>
+                  <select value={issueForm.block} onChange={(e) => setIssueForm((f) => ({ ...f, block: e.target.value }))} className={inputClass} disabled={!issueForm.yarnItemId}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {issueForm.yarnItemId &&
+                      blockBalancesFor(issueForm.yarnItemId).map((b) => (
+                        <option key={b.block} value={b.block}>
+                          {t(`ব্লক ${b.block}`, `Block ${b.block}`)} — {b.qty.toFixed(2)} lb
+                        </option>
+                      ))}
+                  </select>
+                  {issueForm.yarnItemId && blockBalancesFor(issueForm.yarnItemId).length === 0 && (
+                    <p className="mt-1 text-xs text-red">
+                      {t(
+                        'এই ইয়ার্নের কোনো ব্লক এখনো নির্ধারণ করা হয়নি (Inventory > ইয়ার্ন ব্লক পাতায় গিয়ে ব্লক দিন)।',
+                        'No block has been assigned for this yarn yet (set one on Inventory > Yarn Blocks).'
+                      )}
+                    </p>
+                  )}
+                </Field>
                 <Field label={t('ইস্যু কোয়ান্টিটি (lb) *', 'Issue Quantity (lb) *')}>
                   <input type="number" min="0" step="0.01" value={issueForm.qty} onChange={(e) => setIssueForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
                 </Field>
@@ -421,12 +478,13 @@ export default function StyleYarnTracking() {
                         <td className="py-2 pr-4 text-ink-soft">{e.yarnItemName}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.qty} lb</td>
                         <td className="py-2 pr-4 text-ink-soft">
+                          {e.block && `${t('ব্লক', 'Block')}: ${e.block} `}
                           {e.supplier && `${t('সাপ্লায়ার', 'Supplier')}: ${e.supplier} `}
                           {e.chalanNo && `${t('চালান', 'Chalan')}: ${e.chalanNo}`}
                           {e.notes}
                         </td>
                         <td className="py-2 pr-4">
-                          {profile?.role === 'admin' && (
+                          {hasAreaAdmin(profile, 'inventory') && (
                             <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
                               <Trash2 size={14} />
                             </button>

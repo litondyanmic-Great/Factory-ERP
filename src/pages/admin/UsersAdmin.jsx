@@ -4,7 +4,7 @@ import { Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Pill, EmptyState, inputClass, btnSecondary } from '../../components/ui';
-import { ALL_SECTIONS } from '../../lib/constants';
+import { ALL_SECTIONS, ADMIN_AREAS } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 export default function UsersAdmin() {
@@ -19,6 +19,8 @@ export default function UsersAdmin() {
     { key: 'merchandising', label: t('মার্চেন্ডাইজিং', 'Merchandising') },
     { key: 'production', label: t('প্রোডাকশন', 'Production') },
     { key: 'store', label: t('স্টোর', 'Store') },
+    { key: 'gpq', label: t('GPQ (গ্রুপ কোয়ালিটি)', 'GPQ (Group Quality)') },
+    { key: 'ie', label: t('IE (ইন্ডাস্ট্রিয়াল ইঞ্জিনিয়ারিং)', 'IE (Industrial Engineering)') },
   ];
 
   useEffect(() => {
@@ -48,6 +50,14 @@ export default function UsersAdmin() {
       ? current.filter((s) => s !== sectionKey)
       : [...current, sectionKey];
     await updateDoc(doc(db, 'users', u.id), { sections: next });
+  }
+
+  async function toggleAdminArea(u, areaKey) {
+    const current = Array.isArray(u.adminAreas) ? u.adminAreas : [];
+    const next = current.includes(areaKey)
+      ? current.filter((a) => a !== areaKey)
+      : [...current, areaKey];
+    await updateDoc(doc(db, 'users', u.id), { adminAreas: next });
   }
 
   async function handleDelete(u) {
@@ -118,12 +128,12 @@ export default function UsersAdmin() {
                       </Pill>
                     </td>
                     <td className="px-4 py-3">
-                      {(u.role === 'production' || u.role === 'store') && (
+                      {u.role !== 'pending' && u.role !== 'admin' && (
                         <button
                           onClick={() => setExpanded(expanded === u.id ? null : u.id)}
                           className="inline-flex items-center gap-1 text-xs font-medium text-indigo hover:underline"
                         >
-                          {(u.sections || []).length} {t('টি সেকশন', 'sections')}
+                          {t('অ্যাক্সেস', 'Access')}
                           {expanded === u.id ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                         </button>
                       )}
@@ -146,30 +156,61 @@ export default function UsersAdmin() {
                       </div>
                     </td>
                   </tr>
-                  {expanded === u.id && (u.role === 'production' || u.role === 'store') && (
+                  {expanded === u.id && u.role !== 'pending' && u.role !== 'admin' && (
                     <tr className="border-b border-line bg-paper/60">
-                      <td colSpan={6} className="px-4 py-3">
-                        <p className="mb-2 text-xs font-medium text-ink-soft">
-                          {t('এই ইউজার শুধু নিচের টিক দেওয়া সেকশনগুলোতে এন্ট্রি দিতে পারবে:', 'This user can only enter data for the checked sections below:')}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {ALL_SECTIONS.map((s) => {
-                            const active = (u.sections || []).includes(s.key);
-                            return (
-                              <button
-                                key={s.key}
-                                type="button"
-                                onClick={() => toggleSection(u, s.key)}
-                                className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                                  active
-                                    ? 'border-indigo bg-indigo text-white'
-                                    : 'border-line bg-surface text-ink-soft hover:bg-paper'
-                                }`}
-                              >
-                                {lang === 'en' ? s.labelEn : s.label}
-                              </button>
-                            );
-                          })}
+                      <td colSpan={6} className="space-y-4 px-4 py-3">
+                        {(u.role === 'production' || u.role === 'store' || u.role === 'gpq') && (
+                          <div>
+                            <p className="mb-2 text-xs font-medium text-ink-soft">
+                              {t('এই ইউজার শুধু নিচের টিক দেওয়া সেকশনগুলোতে এন্ট্রি দিতে পারবে:', 'This user can only enter data for the checked sections below:')}
+                            </p>
+                            <div className="flex flex-wrap gap-2">
+                              {ALL_SECTIONS.map((s) => {
+                                const active = (u.sections || []).includes(s.key);
+                                return (
+                                  <button
+                                    key={s.key}
+                                    type="button"
+                                    onClick={() => toggleSection(u, s.key)}
+                                    className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                                      active
+                                        ? 'border-indigo bg-indigo text-white'
+                                        : 'border-line bg-surface text-ink-soft hover:bg-paper'
+                                    }`}
+                                  >
+                                    {lang === 'en' ? s.labelEn : s.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                        <div>
+                          <p className="mb-2 text-xs font-medium text-ink-soft">
+                            {t(
+                              'নিচের যে এরিয়াগুলো টিক দেওয়া হবে, সেখানে এই ইউজার এডিট/ডিলিট/ম্যানেজের মতো অ্যাডমিন-লেভেল অ্যাক্সেস পাবে (যেমন GPQ-কে কোয়ালিটি, IE-কে প্রোডাকশন/রিপোর্ট):',
+                              "Checking an area below gives this user admin-level (edit/delete/manage) access within just that area (e.g. give GPQ 'Quality', give IE 'Production'/'Reports'):"
+                            )}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {ADMIN_AREAS.map((a) => {
+                              const active = (u.adminAreas || []).includes(a.key);
+                              return (
+                                <button
+                                  key={a.key}
+                                  type="button"
+                                  onClick={() => toggleAdminArea(u, a.key)}
+                                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                                    active
+                                      ? 'border-amber bg-amber text-white'
+                                      : 'border-line bg-surface text-ink-soft hover:bg-paper'
+                                  }`}
+                                >
+                                  {lang === 'en' ? a.labelEn : a.label}
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
                       </td>
                     </tr>

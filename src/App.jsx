@@ -10,6 +10,7 @@ import Dashboard from './pages/Dashboard';
 import StylesList from './pages/production/StylesList';
 import NewStyle from './pages/production/NewStyle';
 import StyleDetail from './pages/production/StyleDetail';
+import StyleFullReport from './pages/production/StyleFullReport';
 import InventoryList from './pages/inventory/InventoryList';
 import NewItem from './pages/inventory/NewItem';
 import ItemDetail from './pages/inventory/ItemDetail';
@@ -24,7 +25,9 @@ import ZeroThreadReport from './pages/quality/ZeroThreadReport';
 import QualityTrends from './pages/quality/QualityTrends';
 import StyleAccessoryTracking from './pages/inventory/StyleAccessoryTracking';
 import YarnBlockManager from './pages/inventory/YarnBlockManager';
+import YarnLeftoverBank from './pages/inventory/YarnLeftoverBank';
 import ReportsCenter from './pages/ReportsCenter';
+import DailyProductionSheet from './pages/DailyProductionSheet';
 
 export default function App() {
   return (
@@ -65,6 +68,14 @@ export default function App() {
               element={
                 <ProtectedRoute permission="style:view">
                   <StyleDetail />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/production/:id/report"
+              element={
+                <ProtectedRoute permission="style:view">
+                  <StyleFullReport />
                 </ProtectedRoute>
               }
             />
@@ -117,12 +128,28 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/inventory/yarn-leftover"
+              element={
+                <ProtectedRoute permission="inventory:view">
+                  <YarnLeftoverBank />
+                </ProtectedRoute>
+              }
+            />
 
             <Route
               path="/reports"
               element={
                 <ProtectedRoute permission="report:view">
                   <ReportsCenter />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/reports/daily-sheet"
+              element={
+                <ProtectedRoute permission="report:view">
+                  <DailyProductionSheet />
                 </ProtectedRoute>
               }
             />
