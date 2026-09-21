@@ -50,7 +50,7 @@ export default function Shell() {
             <img src={settings.logoDataUrl} alt="logo" className="h-8 w-8 rounded object-contain bg-white/10" />
           ) : (
             <div className="flex h-8 w-8 items-center justify-center rounded bg-amber font-display text-sm font-bold text-white">
-              {companyName?.[0] || 'ও'}
+              {companyName?.[0] || 'ফ'}
             </div>
           )}
           <div className="min-w-0">

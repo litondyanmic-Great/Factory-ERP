@@ -5,8 +5,8 @@ import { db } from '../firebase';
 const SettingsContext = createContext(null);
 
 const DEFAULTS = {
-  companyName: 'ওয়ার্মলুম ইআরপি',
-  companyNameEn: 'Warmloom ERP',
+  companyName: 'ফ্যাক্টরি ইআরপি',
+  companyNameEn: 'Factory ERP',
   address: '',
   phone: '',
   logoDataUrl: '', // base64 data URL, uploaded manually by admin

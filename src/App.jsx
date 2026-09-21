@@ -18,6 +18,7 @@ import StyleYarnTracking from './pages/inventory/StyleYarnTracking';
 import WindingQueue from './pages/inventory/WindingQueue';
 import UsersAdmin from './pages/admin/UsersAdmin';
 import Settings from './pages/admin/Settings';
+import DataCleanup from './pages/admin/DataCleanup';
 import QualityDashboard from './pages/quality/QualityDashboard';
 import QCEntry from './pages/quality/QCEntry';
 import QualityReports from './pages/quality/QualityReports';
@@ -216,6 +217,14 @@ export default function App() {
               element={
                 <ProtectedRoute permission="admin:only">
                   <Settings />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/admin/data-cleanup"
+              element={
+                <ProtectedRoute permission="admin:only">
+                  <DataCleanup />
                 </ProtectedRoute>
               }
             />

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { doc, setDoc } from 'firebase/firestore';
+import { Link } from 'react-router-dom';
 import { Upload, Save } from 'lucide-react';
 import { db } from '../../firebase';
 import { useSettings } from '../../lib/settingsContext';
@@ -174,6 +175,19 @@ export default function Settings() {
           <Save size={16} /> {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
         </button>
       </form>
+
+      <div className="mt-6 rounded-lg border border-line bg-surface p-5">
+        <h2 className="font-display text-sm font-semibold text-ink">{t('ডেটা ক্লিনআপ', 'Data Cleanup')}</h2>
+        <p className="mt-1 text-sm text-ink-soft">
+          {t(
+            'ডিলিট হওয়া স্টাইলের কোনো পুরনো ডেটা (ইয়ার্ন/এক্সেসরিজ লেজার, প্রোডাকশন এন্ট্রি) এখনো ডাটাবেজে থেকে গেলে সেগুলো খুঁজে মুছে ফেলুন।',
+            'Find and remove any leftover data (yarn/accessory ledger, production entries) from styles that were deleted.'
+          )}
+        </p>
+        <Link to="/admin/data-cleanup" className="mt-3 inline-block text-sm font-medium text-indigo hover:underline">
+          {t('ডেটা ক্লিনআপ পাতায় যান →', 'Go to Data Cleanup →')}
+        </Link>
+      </div>
     </div>
   );
 }

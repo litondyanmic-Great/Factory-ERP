@@ -39,7 +39,7 @@ export default function Login() {
             <img src={settings.logoDataUrl} alt="logo" className="mx-auto mb-3 h-10 w-10 rounded object-contain" />
           ) : (
             <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded bg-indigo-deep font-display text-base font-bold text-white">
-              {companyName?.[0] || 'ও'}
+              {companyName?.[0] || 'ফ'}
             </div>
           )}
           <h1 className="font-display text-xl font-semibold text-ink">{companyName}</h1>
