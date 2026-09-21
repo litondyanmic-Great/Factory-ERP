@@ -1,18 +1,20 @@
-import { useEffect, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { useEffect, useMemo, useState } from 'react';
+import { collection, collectionGroup, deleteDoc, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { Plus, Trash2, Boxes, Wind, MapPin, PiggyBank } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { btnPrimary, btnSecondary, EmptyState, Pill } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
-import { can, ITEM_TYPES } from '../../lib/constants';
+import { can, hasAreaAdmin, ITEM_TYPES, YARN_UNIT } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 export default function InventoryList() {
   const { profile } = useAuth();
   const { t } = useLang();
   const [items, setItems] = useState(null);
+  const [yarnLedger, setYarnLedger] = useState(null);
+  const [accLedger, setAccLedger] = useState(null);
   const [filter, setFilter] = useState('all');
 
   useEffect(() => {
@@ -21,12 +23,47 @@ export default function InventoryList() {
     return unsub;
   }, []);
 
+  // Two single collectionGroup queries (not one per item) — this is what
+  // stock is now always computed from, live, so the list here can never
+  // drift from what Style Yarn/Accessory Tracking or Item Detail show.
+  useEffect(() => {
+    const unsub = onSnapshot(query(collectionGroup(db, 'yarnLedger')), (snap) => setYarnLedger(snap.docs.map((d) => d.data())));
+    return unsub;
+  }, []);
+  useEffect(() => {
+    const unsub = onSnapshot(query(collectionGroup(db, 'accessoryLedger')), (snap) => setAccLedger(snap.docs.map((d) => d.data())));
+    return unsub;
+  }, []);
+
+  const stockByItemId = useMemo(() => {
+    const map = new Map();
+    (yarnLedger || []).forEach((e) => {
+      const cur = map.get(e.yarnItemId) || 0;
+      const q = Number(e.qty || 0);
+      if (e.type === 'receipt') map.set(e.yarnItemId, cur + q);
+      if (e.type === 'issueToWinding' || e.type === 'issueToKnitting') map.set(e.yarnItemId, cur - q);
+    });
+    (accLedger || []).forEach((e) => {
+      const cur = map.get(e.itemId) || 0;
+      const q = Number(e.qty || 0);
+      if (e.type === 'receipt') map.set(e.itemId, cur + q);
+      if (e.type === 'issue') map.set(e.itemId, cur - q);
+    });
+    return map;
+  }, [yarnLedger, accLedger]);
+
+  const stockReady = yarnLedger !== null && accLedger !== null;
   const visible = (items || []).filter((i) => filter === 'all' || i.type === filter);
 
   async function handleDelete(e, id, name) {
     e.preventDefault();
     e.stopPropagation();
-    const ok = window.confirm(t(`"${name}" আইটেমটি মুছে ফেলতে চান?`, `Delete item "${name}"?`));
+    const ok = window.confirm(
+      t(
+        `"${name}" আইটেমটি মুছে ফেলতে চান? এটি শুধু ক্যাটালগ এন্ট্রি মুছবে — কোনো স্টাইলের লেজার ইতিহাস মুছবে না।`,
+        `Delete item "${name}"? This only removes the catalog entry — it will NOT delete any style's ledger history.`
+      )
+    );
     if (!ok) return;
     await deleteDoc(doc(db, 'inventoryItems', id));
   }
@@ -42,8 +79,8 @@ export default function InventoryList() {
       },
     },
     { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
-    { key: 'currentStock', label: t('বর্তমান স্টক', 'Current Stock') },
-    { key: 'unit', label: t('একক', 'Unit') },
+    { key: 'currentStock', label: t('বর্তমান স্টক (লাইভ)', 'Current Stock (live)'), render: (r) => (stockByItemId.get(r.id) || 0).toFixed(r.type === 'yarn' ? 2 : 0) },
+    { key: 'unit', label: t('একক', 'Unit'), render: (r) => (r.type === 'yarn' ? YARN_UNIT : r.unit) },
     { key: 'reorderLevel', label: t('রি-অর্ডার লেভেল', 'Reorder Level') },
   ];
 
@@ -93,7 +130,7 @@ export default function InventoryList() {
         ))}
       </div>
 
-      {items === null ? (
+      {items === null || !stockReady ? (
         <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>
       ) : visible.length === 0 ? (
         <EmptyState title={t('কোনো আইটেম নেই', 'No items')} hint={t('নতুন আইটেম যোগ করে শুরু করুন।', 'Add a new item to get started.')} />
@@ -105,14 +142,16 @@ export default function InventoryList() {
                 <th className="px-4 py-3 font-medium">{t('নাম', 'Name')}</th>
                 <th className="px-4 py-3 font-medium">{t('ধরন', 'Type')}</th>
                 <th className="px-4 py-3 font-medium">{t('সাপ্লায়ার', 'Supplier')}</th>
-                <th className="px-4 py-3 font-medium">{t('বর্তমান স্টক', 'Current Stock')}</th>
+                <th className="px-4 py-3 font-medium">{t('বর্তমান স্টক (লাইভ)', 'Current Stock (live)')}</th>
                 <th className="px-4 py-3 font-medium">{t('অবস্থা', 'Status')}</th>
                 <th className="px-4 py-3 font-medium"></th>
               </tr>
             </thead>
             <tbody>
               {visible.map((i) => {
-                const low = Number(i.currentStock) <= Number(i.reorderLevel);
+                const stock = stockByItemId.get(i.id) || 0;
+                const unit = i.type === 'yarn' ? YARN_UNIT : i.unit;
+                const low = stock <= Number(i.reorderLevel || 0);
                 return (
                   <tr
                     key={i.id}
@@ -130,13 +169,13 @@ export default function InventoryList() {
                     </td>
                     <td className="px-4 py-3 text-ink-soft">{i.supplier || '—'}</td>
                     <td className="px-4 py-3 text-ink-soft">
-                      {i.currentStock} {i.unit}
+                      {stock.toFixed(i.type === 'yarn' ? 2 : 0)} {unit}
                     </td>
                     <td className="px-4 py-3">
                       <Pill tone={low ? 'red' : 'green'}>{low ? t('রি-অর্ডার করুন', 'Reorder') : t('পর্যাপ্ত', 'Sufficient')}</Pill>
                     </td>
                     <td className="px-4 py-3">
-                      {profile?.role === 'admin' && (
+                      {hasAreaAdmin(profile, 'inventory') && (
                         <button onClick={(e) => handleDelete(e, i.id, i.name)} className="text-red hover:opacity-70">
                           <Trash2 size={15} />
                         </button>

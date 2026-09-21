@@ -1,38 +1,27 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import {
-  doc,
-  onSnapshot,
-  collection,
-  query,
-  orderBy,
-  limit,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  increment,
-  serverTimestamp,
-} from 'firebase/firestore';
-import { ArrowLeft, Pencil, Trash2 } from 'lucide-react';
+import { collectionGroup, doc, onSnapshot, query, updateDoc, deleteDoc } from 'firebase/firestore';
+import { ArrowLeft, Pencil, Trash2, MapPin } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Pill, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
-import { can, ITEM_TYPES, COMMON_UNITS, YARN_UNIT } from '../../lib/constants';
+import { can, hasAreaAdmin, ITEM_TYPES, COMMON_UNITS, YARN_UNIT } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
+// Stock for an item is now ALWAYS derived live from the same style-scoped
+// ledgers that Style Yarn/Accessory Tracking write to (yarnLedger /
+// accessoryLedger) — there is no separate stored counter to keep in sync,
+// so deleting or correcting an entry anywhere is reflected here
+// immediately and automatically, with nothing to "forget" to update.
 export default function ItemDetail() {
   const { id } = useParams();
-  const { user, profile } = useAuth();
+  const { profile } = useAuth();
   const { t } = useLang();
   const navigate = useNavigate();
   const [item, setItem] = useState(undefined);
-  const [txns, setTxns] = useState(null);
-  const [txType, setTxType] = useState('in');
-  const [qty, setQty] = useState('');
-  const [note, setNote] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [yarnEntries, setYarnEntries] = useState(null);
+  const [accEntries, setAccEntries] = useState(null);
   const [editing, setEditing] = useState(false);
 
   useEffect(() => {
@@ -43,56 +32,89 @@ export default function ItemDetail() {
   }, [id]);
 
   useEffect(() => {
-    const q = query(collection(db, 'inventoryItems', id, 'transactions'), orderBy('date', 'desc'), limit(50));
-    const unsub = onSnapshot(q, (snap) => setTxns(snap.docs.map((d) => ({ id: d.id, ...d.data() }))));
+    const unsub = onSnapshot(query(collectionGroup(db, 'yarnLedger')), (snap) =>
+      setYarnEntries(
+        snap.docs
+          .map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() }))
+          .filter((e) => e.yarnItemId === id)
+      )
+    );
     return unsub;
   }, [id]);
 
-  async function handleAddTxn(e) {
-    e.preventDefault();
-    setError('');
-    const n = Number(qty);
-    if (!n || n <= 0) {
-      setError(t('সঠিক কোয়ান্টিটি দিন।', 'Enter a valid quantity.'));
-      return;
-    }
-    if (txType === 'out' && item && n > Number(item.currentStock)) {
-      setError(t('বর্তমান স্টকের চেয়ে বেশি ইস্যু করা যাবে না।', 'Cannot issue more than current stock.'));
-      return;
-    }
-    setBusy(true);
-    try {
-      await addDoc(collection(db, 'inventoryItems', id, 'transactions'), {
-        type: txType,
-        quantity: n,
-        note: note || '',
-        date: new Date().toISOString().slice(0, 10),
-        enteredBy: profile?.name || user?.email,
-        createdAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'inventoryItems', id), {
-        currentStock: increment(txType === 'in' ? n : -n),
-      });
-      setQty('');
-      setNote('');
-    } catch (err) {
-      setError(t('এন্ট্রি যোগ করা যায়নি।', 'Could not add entry.'));
-    } finally {
-      setBusy(false);
-    }
-  }
+  useEffect(() => {
+    const unsub = onSnapshot(query(collectionGroup(db, 'accessoryLedger')), (snap) =>
+      setAccEntries(
+        snap.docs
+          .map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() }))
+          .filter((e) => e.itemId === id)
+      )
+    );
+    return unsub;
+  }, [id]);
 
-  async function handleDeleteTxn(txn) {
-    const ok = window.confirm(t('এই লেনদেনটি মুছে ফেলতে চান?', 'Delete this transaction?'));
-    if (!ok) return;
-    await updateDoc(doc(db, 'inventoryItems', id), {
-      currentStock: increment(txn.type === 'in' ? -txn.quantity : txn.quantity),
+  const isYarn = item?.type === 'yarn';
+  const entries = isYarn ? yarnEntries : accEntries;
+
+  // Total stock physically at the store right now, summed across every
+  // style this item has ever been ordered against.
+  const totalAtStore = useMemo(() => {
+    if (!entries) return 0;
+    let received = 0, issued = 0;
+    entries.forEach((e) => {
+      const q = Number(e.qty || 0);
+      if (e.type === 'receipt' || e.type === 'blockAdjustIn') received += q;
+      if (isYarn ? e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut' : e.type === 'issue') issued += q;
     });
-    await deleteDoc(doc(db, 'inventoryItems', id, 'transactions', txn.id));
-  }
+    return received - issued;
+  }, [entries, isYarn]);
+
+  // Per-block breakdown (yarn only) — net stock still sitting in each
+  // storage block for this item, across every style.
+  const blockBreakdown = useMemo(() => {
+    if (!isYarn || !entries) return [];
+    const map = new Map();
+    entries.forEach((e) => {
+      if (!e.block) return;
+      const q = Number(e.qty || 0);
+      const delta =
+        e.type === 'receipt' || e.type === 'blockAdjustIn'
+          ? q
+          : e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut'
+            ? -q
+            : 0;
+      map.set(e.block, (map.get(e.block) || 0) + delta);
+    });
+    return Array.from(map.entries())
+      .map(([block, qty]) => ({ block, qty }))
+      .filter((b) => Math.abs(b.qty) > 0.001)
+      .sort((a, b) => a.block.localeCompare(b.block));
+  }, [entries, isYarn]);
+
+  // Per-style breakdown — which styles this item's stock currently sits
+  // against, so "where did this come from / where is it going" is a
+  // one-glance answer.
+  const styleBreakdown = useMemo(() => {
+    if (!entries) return [];
+    const map = new Map();
+    entries.forEach((e) => {
+      const q = Number(e.qty || 0);
+      const key = e.styleLabel || e.styleNo || e.styleId;
+      if (!map.has(key)) map.set(key, { styleId: e.styleId, label: key, received: 0, issued: 0 });
+      const b = map.get(key);
+      if (e.type === 'receipt' || e.type === 'blockAdjustIn') b.received += q;
+      if (isYarn ? e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut' : e.type === 'issue') b.issued += q;
+    });
+    return Array.from(map.values()).map((b) => ({ ...b, balance: b.received - b.issued }));
+  }, [entries, isYarn]);
 
   async function handleDeleteItem() {
-    const ok = window.confirm(t(`"${item.name}" আইটেমটি মুছে ফেলতে চান?`, `Delete item "${item.name}"?`));
+    const ok = window.confirm(
+      t(
+        `"${item.name}" আইটেমটি মুছে ফেলতে চান? এটি শুধু ক্যাটালগ এন্ট্রি মুছবে — কোনো স্টাইলের লেজার (অর্ডার/রিসিভ/ইস্যু) ইতিহাস মুছবে না।`,
+        `Delete item "${item.name}"? This only removes the catalog entry — it will NOT delete any style's ledger (order/receive/issue) history.`
+      )
+    );
     if (!ok) return;
     await deleteDoc(doc(db, 'inventoryItems', id));
     navigate('/inventory');
@@ -101,15 +123,8 @@ export default function ItemDetail() {
   if (item === undefined) return <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>;
   if (item === null) return <EmptyState title={t('আইটেম পাওয়া যায়নি', 'Item not found')} />;
 
-  const low = Number(item.currentStock) <= Number(item.reorderLevel);
-
-  const txnExportColumns = [
-    { key: 'date', label: t('তারিখ', 'Date') },
-    { key: 'type', label: t('ধরন', 'Type'), render: (r) => (r.type === 'in' ? t('ইন', 'In') : t('আউট', 'Out')) },
-    { key: 'quantity', label: t('কোয়ান্টিটি', 'Quantity') },
-    { key: 'note', label: t('নোট', 'Note') },
-    { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
-  ];
+  const low = totalAtStore <= Number(item.reorderLevel || 0);
+  const unit = isYarn ? YARN_UNIT : item.unit;
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -129,8 +144,10 @@ export default function ItemDetail() {
           </div>
           <div className="text-right">
             <p className="font-display text-2xl font-semibold text-ink">
-              {item.currentStock} <span className="text-sm font-normal text-ink-soft">{item.unit}</span>
+              {entries === null ? '…' : totalAtStore.toFixed(isYarn ? 2 : 0)}{' '}
+              <span className="text-sm font-normal text-ink-soft">{unit}</span>
             </p>
+            <p className="text-[11px] text-ink-soft">{t('সব স্টাইল মিলিয়ে স্টোরে (লাইভ)', 'At store, all styles combined (live)')}</p>
             <Pill tone={low ? 'red' : 'green'}>{low ? t('রি-অর্ডার করুন', 'Reorder') : t('পর্যাপ্ত স্টক', 'Sufficient stock')}</Pill>
             <div className="mt-2 flex justify-end gap-3">
               {can(profile?.role, 'inventory:manage') && (
@@ -138,7 +155,7 @@ export default function ItemDetail() {
                   <Pencil size={13} /> {t('এডিট', 'Edit')}
                 </button>
               )}
-              {profile?.role === 'admin' && (
+              {hasAreaAdmin(profile, 'inventory') && (
                 <button onClick={handleDeleteItem} className="inline-flex items-center gap-1 text-xs font-medium text-red hover:underline">
                   <Trash2 size={13} /> {t('ডিলিট', 'Delete')}
                 </button>
@@ -150,93 +167,64 @@ export default function ItemDetail() {
 
       {editing && <EditItemModal item={item} onClose={() => setEditing(false)} />}
 
-      {can(profile?.role, 'inventory:manage') && (
+      <p className="rounded-md border border-line bg-paper p-3 text-xs text-ink-soft">
+        {t(
+          'এই আইটেমের সব স্টক-মুভমেন্ট এখন স্টাইল-ভিত্তিক ট্র্যাকিং থেকেই হয় — সরাসরি এখান থেকে স্টক ইন/আউট করার আলাদা কোনো সিস্টেম নেই, যাতে দুই জায়গার হিসাব কখনো আলাদা হয়ে না যায়। নতুন এন্ট্রির জন্য একটি স্টাইল খুঁজে Style Yarn/Accessory Tracking পাতায় যান।',
+          "All of this item's stock movement now happens through style-based tracking — there's no separate stock in/out system directly here, so the two never drift out of sync. For a new entry, find a style on the Style Yarn/Accessory Tracking page."
+        )}{' '}
+        <Link to={isYarn ? '/inventory/yarn-tracking' : '/inventory/accessory-tracking'} className="font-medium text-indigo hover:underline">
+          {isYarn ? t('ইয়ার্ন ট্র্যাকিংয়ে যান →', 'Go to Yarn Tracking →') : t('এক্সেসরিজ ট্র্যাকিংয়ে যান →', 'Go to Accessory Tracking →')}
+        </Link>
+      </p>
+
+      {isYarn && blockBreakdown.length > 0 && (
         <div className="rounded-lg border border-line bg-surface p-5">
-          <h2 className="mb-4 font-display text-sm font-semibold text-ink">{t('স্টক ইন / আউট', 'Stock In / Out')}</h2>
-          <form onSubmit={handleAddTxn} className="grid gap-4 sm:grid-cols-4">
-            <Field label={t('ধরন', 'Type')}>
-              <select value={txType} onChange={(e) => setTxType(e.target.value)} className={inputClass}>
-                <option value="in">{t('স্টক ইন (রিসিভ)', 'Stock In (Receive)')}</option>
-                <option value="out">{t('স্টক আউট (ইস্যু)', 'Stock Out (Issue)')}</option>
-              </select>
-            </Field>
-            <Field label={t('কোয়ান্টিটি', 'Quantity')}>
-              <input
-                type="number"
-                min="1"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                className={inputClass}
-              />
-            </Field>
-            <Field label={t('রেফারেন্স / নোট', 'Reference / Note')}>
-              <input
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder={t('যেমন: স্টাইল নং বা PO', 'e.g. style number or PO')}
-                className={inputClass}
-              />
-            </Field>
-            <div className="flex items-end">
-              <button type="submit" disabled={busy} className={`${btnPrimary} w-full`}>
-                {busy ? t('যোগ হচ্ছে…', 'Adding…') : t('এন্ট্রি যোগ করুন', 'Add Entry')}
-              </button>
-            </div>
-          </form>
-          {error && <p className="mt-2 text-sm text-red">{error}</p>}
+          <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-semibold text-ink">
+            <MapPin size={15} /> {t('ব্লক অনুযায়ী স্টক (লাইভ)', 'Stock by Block (live)')}
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {blockBreakdown.map((b) => (
+              <Pill key={b.block}>
+                {t('ব্লক', 'Block')} {b.block}: {b.qty.toFixed(2)} {YARN_UNIT}
+              </Pill>
+            ))}
+          </div>
         </div>
       )}
 
       <div className="rounded-lg border border-line bg-surface p-5">
         <div className="mb-4 flex items-center justify-between">
-          <h2 className="font-display text-sm font-semibold text-ink">{t('লেনদেনের ইতিহাস', 'Transaction History')}</h2>
+          <h2 className="font-display text-sm font-semibold text-ink">{t('স্টাইল অনুযায়ী ব্যালেন্স (লাইভ)', 'Balance by Style (live)')}</h2>
           <ExportBar
             small
-            title={t('লেনদেনের ইতিহাস', 'Transaction History')}
+            title={t('স্টাইল অনুযায়ী ব্যালেন্স', 'Balance by Style')}
             subtitle={item.name}
-            filename={`transactions-${item.name}`}
-            columns={txnExportColumns}
-            rows={txns || []}
+            filename={`item-balance-${item.name}`}
+            columns={[
+              { key: 'label', label: t('স্টাইল', 'Style') },
+              { key: 'received', label: t('রিসিভড', 'Received') },
+              { key: 'issued', label: t('ইস্যু', 'Issued') },
+              { key: 'balance', label: t('ব্যালেন্স', 'Balance') },
+            ]}
+            rows={styleBreakdown}
           />
         </div>
-        {txns === null ? (
+        {entries === null ? (
           <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>
-        ) : txns.length === 0 ? (
-          <EmptyState title={t('এখনো কোনো লেনদেন নেই', 'No transactions yet')} />
+        ) : styleBreakdown.length === 0 ? (
+          <EmptyState title={t('এখনো কোনো স্টাইলের বিপরীতে অর্ডার নেই', 'No orders against any style yet')} />
         ) : (
-          <div className="scroll-thin overflow-x-auto">
-            <table className="w-full min-w-[560px] text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-xs text-ink-soft">
-                  <th className="py-2 pr-4 font-medium">{t('তারিখ', 'Date')}</th>
-                  <th className="py-2 pr-4 font-medium">{t('ধরন', 'Type')}</th>
-                  <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
-                  <th className="py-2 pr-4 font-medium">{t('নোট', 'Note')}</th>
-                  <th className="py-2 pr-4 font-medium">{t('এন্ট্রি করেছেন', 'Entered By')}</th>
-                  <th className="py-2 pr-4 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {txns.map((tx) => (
-                  <tr key={tx.id} className="border-b border-line last:border-0">
-                    <td className="py-2 pr-4 text-ink-soft">{tx.date}</td>
-                    <td className="py-2 pr-4">
-                      <Pill tone={tx.type === 'in' ? 'green' : 'amber'}>{tx.type === 'in' ? t('ইন', 'In') : t('আউট', 'Out')}</Pill>
-                    </td>
-                    <td className="py-2 pr-4 text-ink-soft">{tx.quantity}</td>
-                    <td className="py-2 pr-4 text-ink-soft">{tx.note || '—'}</td>
-                    <td className="py-2 pr-4 text-ink-soft">{tx.enteredBy}</td>
-                    <td className="py-2 pr-4">
-                      {profile?.role === 'admin' && (
-                        <button onClick={() => handleDeleteTxn(tx)} className="text-red hover:opacity-70">
-                          <Trash2 size={14} />
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div className="space-y-2">
+            {styleBreakdown.map((b) => (
+              <div key={b.label} className="flex items-center justify-between text-sm">
+                <Link to={`/production/${b.styleId}`} className="text-ink hover:text-indigo hover:underline">
+                  {b.label}
+                </Link>
+                <span className="text-ink-soft">
+                  {b.balance.toFixed(isYarn ? 2 : 0)} {unit} {t('স্টোরে', 'at store')}
+                </span>
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -272,7 +260,10 @@ function EditItemModal({ item, onClose }) {
       await updateDoc(doc(db, 'inventoryItems', item.id), {
         name: form.name,
         type: form.type,
-        unit: form.unit,
+        // Yarn is ALWAYS tracked in lb, never pcs — this is enforced here
+        // regardless of what's selected, so an older item can't drift
+        // back to the wrong unit through an edit.
+        unit: form.type === 'yarn' ? YARN_UNIT : form.unit,
         spec: form.spec || '',
         supplier: form.supplier || '',
         reorderLevel: Number(form.reorderLevel || 0),
@@ -293,11 +284,7 @@ function EditItemModal({ item, onClose }) {
         </Field>
         <div className="grid grid-cols-2 gap-4">
           <Field label={t('ধরন', 'Type')}>
-            <select
-              className={inputClass}
-              value={form.type}
-              onChange={(e) => update('type', e.target.value)}
-            >
+            <select className={inputClass} value={form.type} onChange={(e) => update('type', e.target.value)}>
               {ITEM_TYPES.map((tp) => (
                 <option key={tp.key} value={tp.key}>
                   {t(tp.label, tp.labelEn)}
@@ -307,7 +294,7 @@ function EditItemModal({ item, onClose }) {
           </Field>
           <Field label={t('একক', 'Unit')}>
             {form.type === 'yarn' ? (
-              <input className={`${inputClass} bg-paper`} value="lb" disabled />
+              <input className={`${inputClass} bg-paper`} value={YARN_UNIT} disabled />
             ) : (
               <select className={inputClass} value={form.unit} onChange={(e) => update('unit', e.target.value)}>
                 {COMMON_UNITS.map((u) => (

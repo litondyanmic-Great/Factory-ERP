@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { collection, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { Link } from 'react-router-dom';
 import { Plus, Search, Trash2, ImageOff } from 'lucide-react';
 import { db } from '../../firebase';
@@ -7,6 +7,7 @@ import { useAuth } from '../../context/AuthContext';
 import { btnPrimary, EmptyState, ProgressBar, inputClass } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import { can, stageLabel, FINAL_STAGE_KEY } from '../../lib/constants';
+import { deleteStyleCascade } from '../../lib/deleteStyleCascade';
 import { useLang } from '../../lib/i18n';
 
 export default function StylesList() {
@@ -33,9 +34,14 @@ export default function StylesList() {
   async function handleDelete(e, id, label) {
     e.preventDefault();
     e.stopPropagation();
-    const ok = window.confirm(t(`"${label}" স্টাইলটি মুছে ফেলতে চান?`, `Delete style "${label}"?`));
+    const ok = window.confirm(
+      t(
+        `⚠️ "${label}" স্টাইলটি মুছে ফেললে এর সাথে যুক্ত সব ইয়ার্ন লেজার, এক্সেসরিজ লেজার ও প্রোডাকশন এন্ট্রিও স্থায়ীভাবে মুছে যাবে — কোথাও অবশিষ্ট থাকবে না। এই কাজ ফিরিয়ে আনা যাবে না। নিশ্চিত?`,
+        `⚠️ Deleting style "${label}" also permanently deletes all its yarn ledger, accessory ledger and production entries — nothing will remain anywhere. This cannot be undone. Are you sure?`
+      )
+    );
     if (!ok) return;
-    await deleteDoc(doc(db, 'styles', id));
+    await deleteStyleCascade(id);
   }
 
   const exportColumns = [

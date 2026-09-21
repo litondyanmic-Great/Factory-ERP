@@ -140,10 +140,16 @@ service cloud.firestore {
       // ledger, never stored, so deleting a wrong entry stays consistent.
       match /yarnLedger/{entryId} {
         allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-        allow create: if hasRole(['admin', 'store'])
-          || canEnterSection('yarnStore')
-          || canEnterSection('winding')
-          || canEnterSection('knitting');
+        // blockAdjustIn/blockAdjustOut are manual reconciliation entries
+        // (correcting a mistake or old data), not routine store activity —
+        // restricted to admin / inventory-area-admin specifically, unlike
+        // the routine dyeing order / receipt / issue types below.
+        allow create: if (request.resource.data.type in ['blockAdjustIn', 'blockAdjustOut'])
+          ? hasAdminArea('inventory')
+          : (hasRole(['admin', 'store'])
+              || canEnterSection('yarnStore')
+              || canEnterSection('winding')
+              || canEnterSection('knitting'));
         // The Yarn Manager (store role) may update ONLY the `block` field
         // (A-M storage location) on an entry — everything else about a
         // ledger entry needs admin or inventory-area-admin rights to edit.

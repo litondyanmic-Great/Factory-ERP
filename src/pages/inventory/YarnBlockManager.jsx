@@ -13,6 +13,8 @@ const MOVEMENT_LABEL = {
   receipt: { bn: 'রিসিভড (জমা)', en: 'Received (in)' },
   issueToWinding: { bn: 'ওয়াইন্ডিং-এ ইস্যু (বাহির)', en: 'Issued to Winding (out)' },
   issueToKnitting: { bn: 'নিটিং-এ ইস্যু (বাহির)', en: 'Issued to Knitting (out)' },
+  blockAdjustIn: { bn: 'ব্লক সংশোধন — যোগ (জমা)', en: 'Block Adjustment — Add (in)' },
+  blockAdjustOut: { bn: 'ব্লক সংশোধন — বিয়োগ (বাহির)', en: 'Block Adjustment — Remove (out)' },
 };
 
 // Every "receipt" ledger entry (yarn received from a supplier, against a
@@ -32,7 +34,7 @@ export default function YarnBlockManager() {
   const canManage = can(profile?.role, 'inventory:manage');
 
   useEffect(() => {
-    const q = query(collectionGroup(db, 'yarnLedger'), where('type', 'in', ['receipt', 'issueToWinding', 'issueToKnitting']));
+    const q = query(collectionGroup(db, 'yarnLedger'), where('type', 'in', ['receipt', 'issueToWinding', 'issueToKnitting', 'blockAdjustIn', 'blockAdjustOut']));
     const unsub = onSnapshot(q, (snap) =>
       setMovements(
         snap.docs

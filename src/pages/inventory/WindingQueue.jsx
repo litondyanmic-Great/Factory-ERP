@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, collectionGroup, onSnapshot, query, serverTimestamp } from 'firebase/firestore';
+import { Link } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, EmptyState, Pill } from '../../components/ui';
@@ -137,6 +138,7 @@ export default function WindingQueue() {
                   <th className="py-2 pr-4 font-medium">{t('সম্পন্ন', 'Done')}</th>
                   <th className="py-2 pr-4 font-medium">{t('বাকি', 'Remaining')}</th>
                   {canEnter && <th className="py-2 pr-4 font-medium">{t('এন্ট্রি', 'Entry')}</th>}
+                  <th className="py-2 pr-4 font-medium"></th>
                 </tr>
               </thead>
               <tbody>
@@ -169,6 +171,14 @@ export default function WindingQueue() {
                         </div>
                       </td>
                     )}
+                    <td className="py-2 pr-4">
+                      <Link
+                        to={`/inventory/yarn-tracking?style=${row.styleId}`}
+                        className="text-xs font-medium text-indigo hover:underline"
+                      >
+                        {t('এডিট/ডিলিট →', 'Edit/Delete →')}
+                      </Link>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -184,7 +194,12 @@ export default function WindingQueue() {
             {completed.map((row) => (
               <div key={row.key} className="flex items-center justify-between text-sm">
                 <span className="text-ink">{row.styleLabel} — {row.yarnItemName}</span>
-                <Pill tone="green">{row.done.toFixed(2)} lb {t('সম্পন্ন', 'done')}</Pill>
+                <div className="flex items-center gap-3">
+                  <Pill tone="green">{row.done.toFixed(2)} lb {t('সম্পন্ন', 'done')}</Pill>
+                  <Link to={`/inventory/yarn-tracking?style=${row.styleId}`} className="text-xs font-medium text-indigo hover:underline">
+                    {t('এডিট/ডিলিট →', 'Edit/Delete →')}
+                  </Link>
+                </div>
               </div>
             ))}
           </div>

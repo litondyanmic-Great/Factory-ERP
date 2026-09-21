@@ -4,20 +4,20 @@ import {
   collection,
   deleteDoc,
   doc,
-  increment,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { Trash2, Package, Truck, Send } from 'lucide-react';
+import { Trash2, Pencil, Truck, Send } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { Field, inputClass, btnPrimary, EmptyState } from '../../components/ui';
+import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { can, hasAreaAdmin } from '../../lib/constants';
+import { BLOCKS, can, hasAreaAdmin } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const LEDGER_LABELS = {
@@ -27,20 +27,31 @@ const LEDGER_LABELS = {
   issueToKnitting: { bn: 'সরাসরি নিটিং-এ ইস্যু', en: 'Issued Direct to Knitting' },
   windingToKnitting: { bn: 'ওয়াইন্ডিং থেকে নিটিং', en: 'Winding to Knitting' },
   consumption: { bn: 'নিটিং-এ খরচ হয়েছে', en: 'Consumed in Knitting' },
+  blockAdjustIn: { bn: 'ব্লক সংশোধন (যোগ)', en: 'Block Adjustment (Add)' },
+  blockAdjustOut: { bn: 'ব্লক সংশোধন (বিয়োগ)', en: 'Block Adjustment (Remove)' },
 };
 
+// This ledger (styles/{id}/yarnLedger) is now the ONLY place yarn stock
+// movement is ever recorded — Item Detail and Inventory List both compute
+// their "current stock" numbers live from it (and from the equivalent
+// accessoryLedger). There used to be a second, separate stock counter on
+// the inventoryItems catalog doc that got out of sync with this ledger;
+// that's gone now, so there is exactly one source of truth and deleting
+// an entry here is immediately and automatically reflected everywhere.
 export default function StyleYarnTracking() {
   const { user, profile } = useAuth();
   const { t } = useLang();
-  const [styleId, setStyleId] = useState('');
+  const [searchParams] = useSearchParams();
+  const [styleId, setStyleId] = useState(() => searchParams.get('style') || '');
   const [style, setStyle] = useState(null);
   const [yarnItems, setYarnItems] = useState([]);
   const [ledger, setLedger] = useState(null);
 
-  const [orderForm, setOrderForm] = useState({ yarnItemId: '', supplier: '', qty: '', date: today(), notes: '' });
-  const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', date: today(), notes: '' });
+  const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
   const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
+  const [adjustForm, setAdjustForm] = useState({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
   const [error, setError] = useState('');
+  const [editingEntry, setEditingEntry] = useState(null);
 
   function today() {
     return new Date().toISOString().slice(0, 10);
@@ -86,6 +97,8 @@ export default function StyleYarnTracking() {
           issuedKnitting: 0,
           windingToKnitting: 0,
           consumed: 0,
+          adjustIn: 0,
+          adjustOut: 0,
         });
       }
       const b = map.get(e.yarnItemId);
@@ -96,12 +109,14 @@ export default function StyleYarnTracking() {
       if (e.type === 'issueToKnitting') b.issuedKnitting += q;
       if (e.type === 'windingToKnitting') b.windingToKnitting += q;
       if (e.type === 'consumption') b.consumed += q;
+      if (e.type === 'blockAdjustIn') b.adjustIn += q;
+      if (e.type === 'blockAdjustOut') b.adjustOut += q;
     });
     return Array.from(map.entries()).map(([yarnItemId, b]) => ({
       yarnItemId,
       ...b,
       balanceToReceive: b.ordered - b.received,
-      atStore: b.received - b.issuedWinding - b.issuedKnitting,
+      atStore: b.received + b.adjustIn - b.adjustOut - b.issuedWinding - b.issuedKnitting,
       atWinding: b.issuedWinding - b.windingToKnitting,
       readyForKnitting: b.issuedKnitting + b.windingToKnitting - b.consumed,
     }));
@@ -109,19 +124,18 @@ export default function StyleYarnTracking() {
 
   // Per-block balance for a given yarn item: how much of THIS style's yarn
   // is physically sitting in each block right now (received into that
-  // block, minus whatever's already been issued out of that same block).
-  // This is what makes "issue" draw down a specific block instead of just
-  // a generic store total.
+  // block, plus/minus manual reconciliation adjustments, minus whatever's
+  // already been issued out of that same block).
   const blockBalancesFor = (yarnItemId) => {
     const map = new Map();
     (ledger || [])
       .filter((e) => e.yarnItemId === yarnItemId)
       .forEach((e) => {
         const q = Number(e.qty || 0);
-        if (e.type === 'receipt' && e.block) {
+        if ((e.type === 'receipt' || e.type === 'blockAdjustIn') && e.block) {
           map.set(e.block, (map.get(e.block) || 0) + q);
         }
-        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting') && e.block) {
+        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut') && e.block) {
           map.set(e.block, (map.get(e.block) || 0) - q);
         }
       });
@@ -143,25 +157,6 @@ export default function StyleYarnTracking() {
     });
   }
 
-  async function handleOrder(e) {
-    e.preventDefault();
-    setError('');
-    const item = yarnItems.find((y) => y.id === orderForm.yarnItemId);
-    if (!item || !orderForm.qty) {
-      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
-      return;
-    }
-    await addLedgerEntry('dyeingOrder', {
-      yarnItemId: item.id,
-      yarnItemName: item.name,
-      qty: Number(orderForm.qty),
-      supplier: orderForm.supplier || '',
-      date: orderForm.date,
-      notes: orderForm.notes || '',
-    });
-    setOrderForm({ yarnItemId: '', supplier: '', qty: '', date: today(), notes: '' });
-  }
-
   async function handleReceive(e) {
     e.preventDefault();
     setError('');
@@ -170,26 +165,23 @@ export default function StyleYarnTracking() {
       setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
       return;
     }
+    if (!receiveForm.block) {
+      setError(t('এই চালান কোন ব্লকে রাখা হবে তা নির্বাচন করুন।', 'Select which block this chalan will be stored in.'));
+      return;
+    }
     const n = Number(receiveForm.qty);
+    // Block is set right here, at receive time, in one step — no separate
+    // "assign a block later" page needed for the normal flow anymore.
     await addLedgerEntry('receipt', {
       yarnItemId: item.id,
       yarnItemName: item.name,
       qty: n,
       chalanNo: receiveForm.chalanNo || '',
+      block: receiveForm.block,
       date: receiveForm.date,
       notes: receiveForm.notes || '',
     });
-    // Receiving yarn adds it to the item's overall inventory stock too.
-    await addDoc(collection(db, 'inventoryItems', item.id, 'transactions'), {
-      type: 'in',
-      quantity: n,
-      note: t(`স্টাইল ${style?.styleNo} — চালান: ${receiveForm.chalanNo || '—'}`, `Style ${style?.styleNo} — Chalan: ${receiveForm.chalanNo || '—'}`),
-      date: receiveForm.date,
-      enteredBy: profile?.name || user?.email,
-      createdAt: serverTimestamp(),
-    });
-    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(n) });
-    setReceiveForm({ yarnItemId: '', qty: '', chalanNo: '', date: today(), notes: '' });
+    setReceiveForm({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
   }
 
   async function handleIssue(e) {
@@ -223,32 +215,54 @@ export default function StyleYarnTracking() {
       date: issueForm.date,
       notes: issueForm.notes || '',
     });
-    // Issuing from the Yarn Store must reduce the store's visible stock —
-    // this is the master inventoryItems.currentStock figure (receipts add
-    // to it, issues subtract from it), separate from the style-scoped
-    // "atStore" ledger balance shown in the table below.
-    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(-n) });
     setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
+  }
+
+  async function handleAdjust(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === adjustForm.yarnItemId);
+    const n = Number(adjustForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!adjustForm.block) {
+      setError(t('ব্লক নির্বাচন করুন।', 'Select a block.'));
+      return;
+    }
+    if (adjustForm.direction === 'out') {
+      const blockBal = blockBalancesFor(item.id).find((b) => b.block === adjustForm.block)?.qty || 0;
+      if (n > blockBal + 0.001) {
+        setError(
+          t(
+            `ব্লক ${adjustForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি বিয়োগ করা যাবে না।`,
+            `Block ${adjustForm.block} currently has ${blockBal.toFixed(2)} lb — cannot remove more than that.`
+          )
+        );
+        return;
+      }
+    }
+    await addLedgerEntry(adjustForm.direction === 'in' ? 'blockAdjustIn' : 'blockAdjustOut', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      block: adjustForm.block,
+      date: adjustForm.date,
+      notes: adjustForm.reason || t('ম্যানুয়াল সংশোধন', 'Manual reconciliation'),
+    });
+    setAdjustForm({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
   }
 
   async function handleDeleteEntry(entry) {
     const ok = window.confirm(
       t(
-        `⚠️ সতর্কতা: এই এন্ট্রি মুছে ফেললে এই ইয়ার্নের সব ব্যালেন্স (স্টোর, ওয়াইন্ডিং, নিটিং-প্রস্তুত, ব্লক) স্বয়ংক্রিয়ভাবে পুনরায় হিসাব হবে — অন্য কোনো এন্ট্রি এই মুছে ফেলা এন্ট্রির উপর ভিত্তি করে দেওয়া হয়ে থাকলে ব্যালেন্স ঋণাত্মক (নেগেটিভ) দেখাতে পারে। তারপরও মুছে ফেলতে চান?`,
-        `⚠️ Warning: deleting this entry recalculates ALL balances for this yarn (store, winding, ready-for-knitting, block) automatically — if any later entry depended on this one, a balance may now show negative. Still delete?`
+        '⚠️ সতর্কতা: এই এন্ট্রি মুছে ফেললে এই ইয়ার্নের সব ব্যালেন্স (স্টোর, ব্লক, ওয়াইন্ডিং, নিটিং-প্রস্তুত) এবং Inventory-তে দেখানো সামগ্রিক স্টক — সবকিছু স্বয়ংক্রিয়ভাবে পুনরায় হিসাব হবে, কারণ সবই এই একই লেজার থেকে সরাসরি হিসাব হয়। অন্য কোনো এন্ট্রি এটার উপর ভিত্তি করে দেওয়া হয়ে থাকলে ব্যালেন্স ঋণাত্মক দেখাতে পারে। তারপরও মুছে ফেলতে চান?',
+        "⚠️ Warning: deleting this entry recalculates EVERYTHING for this yarn automatically — store, block, winding, ready-for-knitting balances, and the overall stock shown in Inventory — since all of it is computed directly from this same ledger. If a later entry depended on this one, a balance may now show negative. Still delete?"
       )
     );
     if (!ok) return;
     await deleteDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id));
-    // Receipts pushed stock into overall inventory — reverse that too.
-    if (entry.type === 'receipt') {
-      await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), { currentStock: increment(-entry.qty) });
-    }
-    // Issues (to winding or direct to knitting) pulled stock OUT of the
-    // store — deleting a wrong issue entry must give that stock back.
-    if (entry.type === 'issueToWinding' || entry.type === 'issueToKnitting') {
-      await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), { currentStock: increment(entry.qty) });
-    }
   }
 
   const ledgerExportColumns = [
@@ -278,8 +292,8 @@ export default function StyleYarnTracking() {
         <h1 className="font-display text-2xl font-semibold text-ink">{t('স্টাইল-ভিত্তিক ইয়ার্ন ট্র্যাকিং', 'Style-wise Yarn Tracking')}</h1>
         <p className="mt-1 text-sm text-ink-soft">
           {t(
-            'একটি স্টাইল সার্চ করুন, তারপর ধাপে ধাপে ট্র্যাক করুন: ডাইং অর্ডার → সাপ্লায়ার থেকে রিসিভ (চালানসহ) → ইয়ার্ন স্টোর থেকে ওয়াইন্ডিং বা সরাসরি নিটিং-এ ইস্যু। সব হিসাব পাউন্ড (lb)-এ।',
-            'Search a style, then track it step by step: Dyeing Order → Receive from Supplier (with chalan) → Yarn Store issues to Winding or directly to Knitting. Everything in pounds (lb).'
+            'একটি স্টাইল সার্চ করুন। ডাইং অর্ডার তৈরি হয় Inventory > নতুন আইটেম থেকে — এখান থেকে সাপ্লায়ার থেকে রিসিভ (চালান + ব্লক একসাথে) এবং ইয়ার্ন স্টোর থেকে ওয়াইন্ডিং/নিটিং-এ ইস্যু ট্র্যাক করুন। সব হিসাব পাউন্ড (lb)-এ।',
+            "Search a style. Dyeing orders are created from Inventory > New Item — from here, track receiving from supplier (chalan + block together) and the Yarn Store issuing to Winding/Knitting. Everything in pounds (lb)."
           )}
         </p>
       </div>
@@ -299,33 +313,9 @@ export default function StyleYarnTracking() {
 
           {canManage && (
             <div className="grid gap-4 lg:grid-cols-3">
-              <form onSubmit={handleOrder} className="space-y-3 rounded-lg border border-line bg-surface p-5">
-                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
-                  <Package size={15} /> {t('১. ডাইং অর্ডার', '1. Dyeing Order')}
-                </h2>
-                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
-                  <select value={orderForm.yarnItemId} onChange={(e) => setOrderForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
-                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {yarnItems.map((y) => (
-                      <option key={y.id} value={y.id}>{y.name}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label={t('সাপ্লায়ার', 'Supplier')}>
-                  <input value={orderForm.supplier} onChange={(e) => setOrderForm((f) => ({ ...f, supplier: e.target.value }))} className={inputClass} />
-                </Field>
-                <Field label={t('অর্ডার কোয়ান্টিটি (lb) *', 'Order Quantity (lb) *')}>
-                  <input type="number" min="0" step="0.01" value={orderForm.qty} onChange={(e) => setOrderForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
-                </Field>
-                <Field label={t('তারিখ', 'Date')}>
-                  <input type="date" value={orderForm.date} onChange={(e) => setOrderForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
-                </Field>
-                <button type="submit" className={`${btnPrimary} w-full`}>{t('অর্ডার সেভ করুন', 'Save Order')}</button>
-              </form>
-
               <form onSubmit={handleReceive} className="space-y-3 rounded-lg border border-line bg-surface p-5">
                 <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
-                  <Truck size={15} /> {t('২. সাপ্লায়ার থেকে রিসিভ', '2. Receive from Supplier')}
+                  <Truck size={15} /> {t('সাপ্লায়ার থেকে রিসিভ', 'Receive from Supplier')}
                 </h2>
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={receiveForm.yarnItemId} onChange={(e) => setReceiveForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
@@ -335,9 +325,19 @@ export default function StyleYarnTracking() {
                     ))}
                   </select>
                 </Field>
-                <Field label={t('রিসিভড কোয়ান্টিটি (lb) *', 'Received Quantity (lb) *')}>
-                  <input type="number" min="0" step="0.01" value={receiveForm.qty} onChange={(e) => setReceiveForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
-                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('রিসিভড কোয়ান্টিটি (lb) *', 'Received Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={receiveForm.qty} onChange={(e) => setReceiveForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('কোন ব্লকে রাখা হবে *', 'Store in Block *')}>
+                    <select value={receiveForm.block} onChange={(e) => setReceiveForm((f) => ({ ...f, block: e.target.value }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {BLOCKS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
                 <Field label={t('চালান নং', 'Chalan No.')}>
                   <input value={receiveForm.chalanNo} onChange={(e) => setReceiveForm((f) => ({ ...f, chalanNo: e.target.value }))} className={inputClass} />
                 </Field>
@@ -349,10 +349,10 @@ export default function StyleYarnTracking() {
 
               <form onSubmit={handleIssue} className="space-y-3 rounded-lg border border-line bg-surface p-5">
                 <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
-                  <Send size={15} /> {t('৩. ইয়ার্ন স্টোর থেকে ইস্যু', '3. Issue from Yarn Store')}
+                  <Send size={15} /> {t('ইয়ার্ন স্টোর থেকে ইস্যু', 'Issue from Yarn Store')}
                 </h2>
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
-                  <select value={issueForm.yarnItemId} onChange={(e) => setIssueForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
+                  <select value={issueForm.yarnItemId} onChange={(e) => setIssueForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
                     {yarnItems.map((y) => (
                       <option key={y.id} value={y.id}>{y.name}</option>
@@ -377,10 +377,7 @@ export default function StyleYarnTracking() {
                   </select>
                   {issueForm.yarnItemId && blockBalancesFor(issueForm.yarnItemId).length === 0 && (
                     <p className="mt-1 text-xs text-red">
-                      {t(
-                        'এই ইয়ার্নের কোনো ব্লক এখনো নির্ধারণ করা হয়নি (Inventory > ইয়ার্ন ব্লক পাতায় গিয়ে ব্লক দিন)।',
-                        'No block has been assigned for this yarn yet (set one on Inventory > Yarn Blocks).'
-                      )}
+                      {t('এই ইয়ার্নের কোনো ব্লকে এখনো স্টক নেই — আগে রিসিভ করুন।', 'No block has any stock for this yarn yet — receive it first.')}
                     </p>
                   )}
                 </Field>
@@ -392,6 +389,58 @@ export default function StyleYarnTracking() {
                 </Field>
                 <button type="submit" className={`${btnPrimary} w-full`}>{t('ইস্যু সেভ করুন', 'Save Issue')}</button>
               </form>
+
+              {hasAreaAdmin(profile, 'inventory') && (
+                <form onSubmit={handleAdjust} className="space-y-3 rounded-lg border border-amber bg-amber-soft/30 p-5">
+                  <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                    {t('ব্লক সংশোধন (রিকনসিলিয়েশন)', 'Block Adjustment (Reconciliation)')}
+                  </h2>
+                  <p className="text-xs text-ink-soft">
+                    {t(
+                      'ভুল এন্ট্রি বা পুরনো ডেটা ঠিক করতে সরাসরি কোনো ব্লকের স্টক যোগ/বিয়োগ করুন — এটা সাধারণ রিসিভ/ইস্যু না, শুধু হিসাব মিলাতে ব্যবহার করুন।',
+                      "Directly add/remove stock in a block to fix a mistake or reconcile old data — this isn't a normal receive/issue, use it only to correct the count."
+                    )}
+                  </p>
+                  <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                    <select value={adjustForm.yarnItemId} onChange={(e) => setAdjustForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {yarnItems.map((y) => (
+                        <option key={y.id} value={y.id}>{y.name}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={t('দিক', 'Direction')}>
+                    <select value={adjustForm.direction} onChange={(e) => setAdjustForm((f) => ({ ...f, direction: e.target.value }))} className={inputClass}>
+                      <option value="in">{t('যোগ করুন (+)', 'Add (+)')}</option>
+                      <option value="out">{t('বিয়োগ করুন (−)', 'Remove (−)')}</option>
+                    </select>
+                  </Field>
+                  <Field label={t('ব্লক *', 'Block *')}>
+                    <select value={adjustForm.block} onChange={(e) => setAdjustForm((f) => ({ ...f, block: e.target.value }))} className={inputClass}>
+                      <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                      {BLOCKS.map((b) => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                    {adjustForm.direction === 'out' && adjustForm.yarnItemId && adjustForm.block && (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t('বর্তমানে এই ব্লকে', 'Currently in this block')}:{' '}
+                        {(blockBalancesFor(adjustForm.yarnItemId).find((b) => b.block === adjustForm.block)?.qty || 0).toFixed(2)} lb
+                      </p>
+                    )}
+                  </Field>
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={adjustForm.qty} onChange={(e) => setAdjustForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={adjustForm.date} onChange={(e) => setAdjustForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('কারণ *', 'Reason *')}>
+                    <input value={adjustForm.reason} onChange={(e) => setAdjustForm((f) => ({ ...f, reason: e.target.value }))} className={inputClass} placeholder={t('যেমন: ফিজিক্যাল কাউন্ট মেলাতে', 'e.g. to match physical count')} />
+                  </Field>
+                  <button type="submit" className={`${btnPrimary} w-full`}>{t('সংশোধন সেভ করুন', 'Save Adjustment')}</button>
+                </form>
+              )}
             </div>
           )}
 
@@ -484,11 +533,18 @@ export default function StyleYarnTracking() {
                           {e.notes}
                         </td>
                         <td className="py-2 pr-4">
-                          {hasAreaAdmin(profile, 'inventory') && (
-                            <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {hasAreaAdmin(profile, 'inventory') && (
+                              <>
+                                <button onClick={() => setEditingEntry(e)} className="text-indigo hover:opacity-70">
+                                  <Pencil size={14} />
+                                </button>
+                                <button onClick={() => handleDeleteEntry(e)} className="text-red hover:opacity-70">
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -499,6 +555,103 @@ export default function StyleYarnTracking() {
           </div>
         </>
       )}
+
+      {editingEntry && (
+        <EditLedgerEntryModal
+          entry={editingEntry}
+          styleId={styleId}
+          onClose={() => setEditingEntry(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// Admin/inventory-area-admin can correct a mistaken entry directly (wrong
+// quantity, date, chalan number, block, or notes) instead of having to
+// delete and re-create it. The entry's `type` never changes here — editing
+// what an entry MEANS (receipt vs issue, etc.) would need a delete + new
+// entry, since every balance formula depends on type staying fixed.
+function EditLedgerEntryModal({ entry, styleId, onClose }) {
+  const { t } = useLang();
+  const [qty, setQty] = useState(String(entry.qty));
+  const [date, setDate] = useState(entry.date);
+  const [block, setBlock] = useState(entry.block || '');
+  const [chalanNo, setChalanNo] = useState(entry.chalanNo || '');
+  const [notes, setNotes] = useState(entry.notes || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const showBlock = ['receipt', 'issueToWinding', 'issueToKnitting', 'blockAdjustIn', 'blockAdjustOut'].includes(entry.type);
+  const showChalan = entry.type === 'receipt';
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError('');
+    const n = Number(qty);
+    if (!n || n <= 0) {
+      setError(t('সঠিক কোয়ান্টিটি দিন।', 'Enter a valid quantity.'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'styles', styleId, 'yarnLedger', entry.id), {
+        qty: n,
+        date,
+        ...(showBlock ? { block } : {}),
+        ...(showChalan ? { chalanNo } : {}),
+        notes,
+      });
+      onClose();
+    } catch (err) {
+      setError(t('সেভ করা যায়নি।', 'Could not save.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={t('এন্ট্রি এডিট করুন', 'Edit Entry')} onClose={onClose}>
+      <form onSubmit={handleSave} className="space-y-4">
+        <p className="text-xs text-ink-soft">
+          {t(LEDGER_LABELS[entry.type]?.bn, LEDGER_LABELS[entry.type]?.en)} — {entry.yarnItemName}
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+            <input type="number" min="0" step="0.01" className={inputClass} value={qty} onChange={(e) => setQty(e.target.value)} />
+          </Field>
+          <Field label={t('তারিখ', 'Date')}>
+            <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+          {showBlock && (
+            <Field label={t('ব্লক', 'Block')}>
+              <select className={inputClass} value={block} onChange={(e) => setBlock(e.target.value)}>
+                <option value="">{t('কোনোটি না', 'None')}</option>
+                {BLOCKS.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {showChalan && (
+            <Field label={t('চালান নং', 'Chalan No.')}>
+              <input className={inputClass} value={chalanNo} onChange={(e) => setChalanNo(e.target.value)} />
+            </Field>
+          )}
+        </div>
+        <Field label={t('নোট', 'Notes')}>
+          <input className={inputClass} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red">{error}</p>}
+        <div className="flex gap-3">
+          <button type="submit" disabled={busy} className={btnPrimary}>
+            {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
+          </button>
+          <button type="button" className={btnSecondary} onClick={onClose}>
+            {t('বাতিল', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

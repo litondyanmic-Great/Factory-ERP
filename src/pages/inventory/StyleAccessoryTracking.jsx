@@ -4,17 +4,16 @@ import {
   collection,
   deleteDoc,
   doc,
-  increment,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { Trash2, PackageCheck, Send } from 'lucide-react';
+import { Trash2, Pencil, PackageCheck, Send } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { Field, inputClass, btnPrimary, EmptyState } from '../../components/ui';
+import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
 import { ALL_SECTIONS, ACCESSORIES_SECTION, canEnterSection, stageLabel, hasAreaAdmin } from '../../lib/constants';
@@ -36,6 +35,7 @@ export default function StyleAccessoryTracking() {
   const [receiveForm, setReceiveForm] = useState({ itemId: '', qty: '', chalanNo: '', supplier: '', date: today(), notes: '' });
   const [issueForm, setIssueForm] = useState({ itemId: '', section: '', qty: '', date: today(), notes: '' });
   const [error, setError] = useState('');
+  const [editingEntry, setEditingEntry] = useState(null);
 
   const canEnter = canEnterSection(profile, ACCESSORIES_SECTION.key) || profile?.role === 'admin' || profile?.role === 'store';
 
@@ -132,15 +132,6 @@ export default function StyleAccessoryTracking() {
       enteredBy: profile?.name || user?.email,
       createdAt: serverTimestamp(),
     });
-    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(n) });
-    await addDoc(collection(db, 'inventoryItems', item.id, 'transactions'), {
-      type: 'in',
-      quantity: n,
-      note: t(`স্টাইল ${style?.styleNo} — চালান: ${receiveForm.chalanNo || '—'}`, `Style ${style?.styleNo} — Chalan: ${receiveForm.chalanNo || '—'}`),
-      date: receiveForm.date,
-      enteredBy: profile?.name || user?.email,
-      createdAt: serverTimestamp(),
-    });
     setReceiveForm({ itemId: '', qty: '', chalanNo: '', supplier: '', date: today(), notes: '' });
   }
 
@@ -172,9 +163,8 @@ export default function StyleAccessoryTracking() {
       enteredBy: profile?.name || user?.email,
       createdAt: serverTimestamp(),
     });
-    // Issuing to a production section must reduce the store's visible
-    // stock, same as yarn issues do.
-    await updateDoc(doc(db, 'inventoryItems', item.id), { currentStock: increment(-n) });
+    // Balance is computed live from this same ledger everywhere it's
+    // shown (Item Detail, Inventory List) — nothing separate to update.
     setIssueForm({ itemId: '', section: '', qty: '', date: today(), notes: '' });
   }
 
@@ -187,12 +177,9 @@ export default function StyleAccessoryTracking() {
     );
     if (!ok) return;
     await deleteDoc(doc(db, 'styles', styleId, 'accessoryLedger', entry.id));
-    if (entry.type === 'receipt') {
-      await updateDoc(doc(db, 'inventoryItems', entry.itemId), { currentStock: increment(-entry.qty) });
-    }
-    if (entry.type === 'issue') {
-      await updateDoc(doc(db, 'inventoryItems', entry.itemId), { currentStock: increment(entry.qty) });
-    }
+    // Balance is computed live from this same ledger — deleting an entry
+    // here automatically updates every balance shown anywhere else, with
+    // nothing separate to reverse.
   }
 
   const exportColumns = [
@@ -382,11 +369,18 @@ export default function StyleAccessoryTracking() {
                           {e.supplier}
                         </td>
                         <td className="py-2 pr-4">
-                          {hasAreaAdmin(profile, 'inventory') && (
-                            <button onClick={() => handleDelete(e)} className="text-red hover:opacity-70">
-                              <Trash2 size={14} />
-                            </button>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {hasAreaAdmin(profile, 'inventory') && (
+                              <>
+                                <button onClick={() => setEditingEntry(e)} className="text-indigo hover:opacity-70">
+                                  <Pencil size={14} />
+                                </button>
+                                <button onClick={() => handleDelete(e)} className="text-red hover:opacity-70">
+                                  <Trash2 size={14} />
+                                </button>
+                              </>
+                            )}
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -397,6 +391,100 @@ export default function StyleAccessoryTracking() {
           </div>
         </>
       )}
+
+      {editingEntry && (
+        <EditAccessoryEntryModal entry={editingEntry} styleId={styleId} onClose={() => setEditingEntry(null)} />
+      )}
     </div>
+  );
+}
+
+// Same idea as the yarn ledger's edit modal: correct a mistaken entry in
+// place (qty, date, section, chalan, supplier, notes) instead of having to
+// delete and re-create it. Type never changes here.
+function EditAccessoryEntryModal({ entry, styleId, onClose }) {
+  const { t, lang } = useLang();
+  const [qty, setQty] = useState(String(entry.qty));
+  const [date, setDate] = useState(entry.date);
+  const [section, setSection] = useState(entry.section || '');
+  const [chalanNo, setChalanNo] = useState(entry.chalanNo || '');
+  const [supplier, setSupplier] = useState(entry.supplier || '');
+  const [notes, setNotes] = useState(entry.notes || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const showSection = entry.type === 'issue';
+  const showChalanSupplier = entry.type === 'order' || entry.type === 'receipt';
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError('');
+    const n = Number(qty);
+    if (!n || n <= 0) {
+      setError(t('সঠিক কোয়ান্টিটি দিন।', 'Enter a valid quantity.'));
+      return;
+    }
+    setBusy(true);
+    try {
+      await updateDoc(doc(db, 'styles', styleId, 'accessoryLedger', entry.id), {
+        qty: n,
+        date,
+        ...(showSection ? { section } : {}),
+        ...(showChalanSupplier ? { chalanNo, supplier } : {}),
+        notes,
+      });
+      onClose();
+    } catch (err) {
+      setError(t('সেভ করা যায়নি।', 'Could not save.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title={t('এন্ট্রি এডিট করুন', 'Edit Entry')} onClose={onClose}>
+      <form onSubmit={handleSave} className="space-y-4">
+        <p className="text-xs text-ink-soft">{entry.itemName}</p>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label={t('কোয়ান্টিটি *', 'Quantity *')}>
+            <input type="number" min="0" step="0.01" className={inputClass} value={qty} onChange={(e) => setQty(e.target.value)} />
+          </Field>
+          <Field label={t('তারিখ', 'Date')}>
+            <input type="date" className={inputClass} value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+          {showSection && (
+            <Field label={t('সেকশন', 'Section')}>
+              <select className={inputClass} value={section} onChange={(e) => setSection(e.target.value)}>
+                {ALL_SECTIONS.map((s) => (
+                  <option key={s.key} value={s.key}>{lang === 'en' ? s.labelEn : s.label}</option>
+                ))}
+              </select>
+            </Field>
+          )}
+          {showChalanSupplier && (
+            <>
+              <Field label={t('চালান নং', 'Chalan No.')}>
+                <input className={inputClass} value={chalanNo} onChange={(e) => setChalanNo(e.target.value)} />
+              </Field>
+              <Field label={t('সাপ্লায়ার', 'Supplier')}>
+                <input className={inputClass} value={supplier} onChange={(e) => setSupplier(e.target.value)} />
+              </Field>
+            </>
+          )}
+        </div>
+        <Field label={t('নোট', 'Notes')}>
+          <input className={inputClass} value={notes} onChange={(e) => setNotes(e.target.value)} />
+        </Field>
+        {error && <p className="text-sm text-red">{error}</p>}
+        <div className="flex gap-3">
+          <button type="submit" disabled={busy} className={btnPrimary}>
+            {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('সেভ করুন', 'Save')}
+          </button>
+          <button type="button" className={btnSecondary} onClick={onClose}>
+            {t('বাতিল', 'Cancel')}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }

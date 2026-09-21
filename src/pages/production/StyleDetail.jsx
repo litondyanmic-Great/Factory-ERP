@@ -10,6 +10,8 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  getDocs,
+  writeBatch,
   increment,
   serverTimestamp,
 } from 'firebase/firestore';
@@ -221,24 +223,50 @@ export default function StyleDetail() {
     const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
     if (!ok) return;
     await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
-    if (entry.yarnItemId) {
-      await updateDoc(doc(db, 'inventoryItems', entry.yarnItemId), {
-        currentStock: increment(entry.yarnQty || 0),
-      });
-      if (entry.yarnLedgerId) {
-        await deleteDoc(doc(db, 'styles', id, 'yarnLedger', entry.yarnLedgerId));
-      }
+    if (entry.yarnItemId && entry.yarnLedgerId) {
+      // Deleting the matching yarn-consumption ledger entry is enough —
+      // every yarn balance (store/block/winding/ready-for-knitting) is
+      // computed live from this ledger, so nothing else needs touching.
+      await deleteDoc(doc(db, 'styles', id, 'yarnLedger', entry.yarnLedgerId));
     }
     await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
   }
 
+  // Firestore never auto-deletes a document's subcollections, so deleting
+  // just the style doc would leave its productionEntries/yarnLedger/
+  // accessoryLedger documents orphaned — and since Reports, the
+  // Dashboard, Yarn Blocks and Item Detail all read those via
+  // collectionGroup() queries across every style, an orphaned style's
+  // data would keep showing up everywhere forever. This fetches and
+  // deletes every subcollection document first, then the style itself.
   async function handleDeleteStyle() {
     const ok = window.confirm(
-      t(`"${style.styleNo}" স্টাইলটি এবং এর সব এন্ট্রি স্থায়ীভাবে মুছে ফেলতে চান?`, `Permanently delete style "${style.styleNo}" and all its entries?`)
+      t(
+        `⚠️ "${style.styleNo}" স্টাইলটি স্থায়ীভাবে মুছে ফেলতে চান? এর সব প্রোডাকশন এন্ট্রি, ইয়ার্ন লেজার এবং এক্সেসরিজ লেজার — সবকিছু মুছে যাবে এবং কোনো রিপোর্টে আর দেখা যাবে না। এটা ফিরিয়ে আনা যাবে না।`,
+        `⚠️ Permanently delete style "${style.styleNo}"? All of its production entries, yarn ledger, and accessory ledger will be deleted and will no longer appear in any report. This cannot be undone.`
+      )
     );
     if (!ok) return;
-    await deleteDoc(doc(db, 'styles', id));
-    navigate('/production');
+    setBusy(true);
+    try {
+      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger'];
+      for (const sub of subcollections) {
+        const snap = await getDocs(collection(db, 'styles', id, sub));
+        const docs = snap.docs;
+        // Firestore batches cap at 500 writes — chunk just in case a
+        // style somehow has more entries than that.
+        for (let i = 0; i < docs.length; i += 450) {
+          const batch = writeBatch(db);
+          docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
+          await batch.commit();
+        }
+      }
+      await deleteDoc(doc(db, 'styles', id));
+      navigate('/production');
+    } catch (err) {
+      setError(t('স্টাইল মুছে ফেলা যায়নি, আবার চেষ্টা করুন।', 'Could not delete the style, please try again.'));
+      setBusy(false);
+    }
   }
 
   if (style === undefined) return <p className="text-sm text-ink-soft">{t('লোড হচ্ছে…', 'Loading…')}</p>;
