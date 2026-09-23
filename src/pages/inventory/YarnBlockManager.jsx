@@ -99,7 +99,7 @@ export default function YarnBlockManager() {
         </Link>
       </div>
 
-      <div className="grid grid-cols-4 gap-2 sm:grid-cols-7 lg:grid-cols-13">
+      <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 lg:grid-cols-16">
         {BLOCKS.map((b) => (
           <button
             key={b}

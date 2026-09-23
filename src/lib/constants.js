@@ -102,7 +102,7 @@ export const COMMON_UNITS = ['pcs', 'dozen', 'kg', 'lb', 'yard', 'cone', 'box', 
 
 // Production "blocks" / lines (A through M) used to tag which line a QC
 // check was done on, alongside Style and Section.
-export const BLOCKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'];
+export const BLOCKS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'G-1', 'G-2', 'G-3'];
 
 // Sentinel style id used by Quality entry when a check covers a mixed lot
 // rather than one specific style.

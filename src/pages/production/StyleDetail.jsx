@@ -23,6 +23,7 @@ import ExportBar from '../../components/ExportBar';
 import { STAGES, can, canEnterSection, stageLabel } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
+import PoColourEditor, { emptyPo, posSummary, poSubtotal } from '../../components/PoColourEditor';
 
 export default function StyleDetail() {
   const { id } = useParams();
@@ -354,6 +355,32 @@ export default function StyleDetail() {
           </div>
         </div>
         {style.notes && <p className="mt-3 text-sm text-ink-soft">{style.notes}</p>}
+
+        {Array.isArray(style.pos) && style.pos.length > 0 && (
+          <div className="mt-4 border-t border-line pt-4">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+              {t('PO ও কালার-ওয়াইজ ব্রেকডাউন', 'PO & Colour-wise Breakdown')}
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {style.pos.map((po, i) => (
+                <div key={i} className="rounded-md border border-line bg-paper p-3">
+                  <p className="text-sm font-medium text-ink">PO: {po.poNo}</p>
+                  <ul className="mt-1 space-y-0.5 text-xs text-ink-soft">
+                    {po.colours.map((c, j) => (
+                      <li key={j} className="flex justify-between">
+                        <span>{c.colour}</span>
+                        <span>{Number(c.qty).toLocaleString('en-US')}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="mt-1.5 border-t border-line pt-1 text-right text-xs font-semibold text-ink">
+                    {t('সাবটোটাল', 'Subtotal')}: {poSubtotal(po).toLocaleString('en-US')}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {editingStyle && (
@@ -597,6 +624,12 @@ export default function StyleDetail() {
 
 function EditStyleModal({ style, onClose }) {
   const { t } = useLang();
+  // Styles created before the PO/colour-wise system have no `pos` array —
+  // those keep editing via the old single poNo/colour/orderQty fields, per
+  // factory's decision to not touch old data. New-format styles (with
+  // `pos`) edit via the same PO+colour builder used at creation.
+  const isNewFormat = Array.isArray(style.pos) && style.pos.length > 0;
+  const [pos, setPos] = useState(isNewFormat ? style.pos.map((po) => ({ ...po, colours: po.colours.map((c) => ({ ...c })) })) : [emptyPo()]);
   const [form, setForm] = useState({
     orderDate: style.orderDate || '',
     buyer: style.buyer || '',
@@ -632,25 +665,49 @@ function EditStyleModal({ style, onClose }) {
   async function handleSave(e) {
     e.preventDefault();
     setError('');
-    if (!form.styleNo || !form.buyer || !form.orderQty) {
-      setError(t('স্টাইল নম্বর, বায়ার এবং অর্ডার কোয়ান্টিটি আবশ্যক।', 'Style number, buyer and order quantity are required.'));
-      return;
+
+    let payload;
+    if (isNewFormat) {
+      const cleanPos = pos
+        .map((po) => ({
+          poNo: po.poNo.trim(),
+          colours: po.colours
+            .map((c) => ({ colour: c.colour.trim(), qty: Number(c.qty) || 0 }))
+            .filter((c) => c.colour && c.qty > 0),
+        }))
+        .filter((po) => po.poNo && po.colours.length > 0);
+      const summary = posSummary(cleanPos);
+      if (!form.styleNo || !form.buyer || cleanPos.length === 0 || summary.orderQty <= 0) {
+        setError(
+          t(
+            'স্টাইল নম্বর, বায়ার এবং অন্তত একটি PO-তে কালার-ওয়াইজ কোয়ান্টিটি আবশ্যক।',
+            'Style number, buyer, and at least one PO with colour-wise quantity are required.'
+          )
+        );
+        return;
+      }
+      payload = { pos: cleanPos, poNo: summary.poNo, colour: summary.colour, orderQty: summary.orderQty };
+    } else {
+      if (!form.styleNo || !form.buyer || !form.orderQty) {
+        setError(t('স্টাইল নম্বর, বায়ার এবং অর্ডার কোয়ান্টিটি আবশ্যক।', 'Style number, buyer and order quantity are required.'));
+        return;
+      }
+      payload = { poNo: form.poNo || '', colour: form.colour || '', orderQty: Number(form.orderQty) };
     }
+
     setBusy(true);
     try {
       await updateDoc(doc(db, 'styles', style.id), {
         orderDate: form.orderDate || null,
         buyer: form.buyer,
-        poNo: form.poNo || '',
         styleName: form.styleName || '',
         styleNo: form.styleNo,
         gg: form.gg || '',
         shipDate: form.shipDate || null,
-        colour: form.colour || '',
         yarnComposition: form.yarnComposition || '',
-        orderQty: Number(form.orderQty),
         notes: form.notes || '',
         imageUrl: imageDataUrl || '',
+        ...payload,
       });
       onClose();
     } catch (err) {
@@ -688,9 +745,11 @@ function EditStyleModal({ style, onClose }) {
           <Field label={t('বায়ার *', 'Buyer *')}>
             <input className={inputClass} value={form.buyer} onChange={(e) => update('buyer', e.target.value)} />
           </Field>
-          <Field label={t('PO নম্বর', 'PO No.')}>
-            <input className={inputClass} value={form.poNo} onChange={(e) => update('poNo', e.target.value)} />
-          </Field>
+          {!isNewFormat && (
+            <Field label={t('PO নম্বর', 'PO No.')}>
+              <input className={inputClass} value={form.poNo} onChange={(e) => update('poNo', e.target.value)} />
+            </Field>
+          )}
           <Field label={t('স্টাইল নাম', 'Style Name')}>
             <input className={inputClass} value={form.styleName} onChange={(e) => update('styleName', e.target.value)} />
           </Field>
@@ -703,16 +762,23 @@ function EditStyleModal({ style, onClose }) {
           <Field label={t('শিপমেন্ট ডেট', 'Shipment Date')}>
             <input type="date" className={inputClass} value={form.shipDate} onChange={(e) => update('shipDate', e.target.value)} />
           </Field>
-          <Field label={t('কালার', 'Colour')}>
-            <input className={inputClass} value={form.colour} onChange={(e) => update('colour', e.target.value)} />
-          </Field>
+          {!isNewFormat && (
+            <Field label={t('কালার', 'Colour')}>
+              <input className={inputClass} value={form.colour} onChange={(e) => update('colour', e.target.value)} />
+            </Field>
+          )}
           <Field label={t('ইয়ার্ন কম্পোজিশন', 'Yarn Composition')}>
             <input className={inputClass} value={form.yarnComposition} onChange={(e) => update('yarnComposition', e.target.value)} />
           </Field>
-          <Field label={t('অর্ডার কোয়ান্টিটি (পিস) *', 'Order Quantity (pcs) *')}>
-            <input type="number" min="1" className={inputClass} value={form.orderQty} onChange={(e) => update('orderQty', e.target.value)} />
-          </Field>
+          {!isNewFormat && (
+            <Field label={t('অর্ডার কোয়ান্টিটি (পিস) *', 'Order Quantity (pcs) *')}>
+              <input type="number" min="1" className={inputClass} value={form.orderQty} onChange={(e) => update('orderQty', e.target.value)} />
+            </Field>
+          )}
         </div>
+
+        {isNewFormat && <PoColourEditor pos={pos} onChange={setPos} />}
+
         <Field label={t('নোট', 'Notes')}>
           <textarea className={inputClass} rows={2} value={form.notes} onChange={(e) => update('notes', e.target.value)} />
         </Field>

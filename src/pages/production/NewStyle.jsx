@@ -8,6 +8,7 @@ import { Field, inputClass, btnPrimary, btnSecondary } from '../../components/ui
 import { emptyStageMap } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
+import PoColourEditor, { emptyPo, posSummary } from '../../components/PoColourEditor';
 
 export default function NewStyle() {
   const { user, profile } = useAuth();
@@ -16,16 +17,14 @@ export default function NewStyle() {
   const [form, setForm] = useState({
     orderDate: new Date().toISOString().slice(0, 10),
     buyer: '',
-    poNo: '',
     styleName: '',
     styleNo: '',
     gg: '',
     shipDate: '',
-    colour: '',
     yarnComposition: '',
-    orderQty: '',
     notes: '',
   });
+  const [pos, setPos] = useState([emptyPo()]);
   const [imageDataUrl, setImageDataUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -48,9 +47,21 @@ export default function NewStyle() {
   async function handleSubmit(e) {
     e.preventDefault();
     setError('');
-    if (!form.styleNo || !form.buyer || !form.orderQty) {
+    const cleanPos = pos
+      .map((po) => ({
+        poNo: po.poNo.trim(),
+        colours: po.colours
+          .map((c) => ({ colour: c.colour.trim(), qty: Number(c.qty) || 0 }))
+          .filter((c) => c.colour && c.qty > 0),
+      }))
+      .filter((po) => po.poNo && po.colours.length > 0);
+    const summary = posSummary(cleanPos);
+    if (!form.styleNo || !form.buyer || cleanPos.length === 0 || summary.orderQty <= 0) {
       setError(
-        t('স্টাইল নম্বর, বায়ার এবং অর্ডার কোয়ান্টিটি আবশ্যক।', 'Style number, buyer and order quantity are required.')
+        t(
+          'স্টাইল নম্বর, বায়ার এবং অন্তত একটি PO-তে কালার-ওয়াইজ কোয়ান্টিটি আবশ্যক।',
+          'Style number, buyer, and at least one PO with colour-wise quantity are required.'
+        )
       );
       return;
     }
@@ -59,17 +70,19 @@ export default function NewStyle() {
       const docRef = await addDoc(collection(db, 'styles'), {
         orderDate: form.orderDate || null,
         buyer: form.buyer,
-        poNo: form.poNo || '',
+        pos: cleanPos,
+        poNo: summary.poNo,
         styleName: form.styleName || '',
         styleNo: form.styleNo,
         gg: form.gg || '',
         shipDate: form.shipDate || null,
-        colour: form.colour || '',
+        colour: summary.colour,
         yarnComposition: form.yarnComposition || '',
-        orderQty: Number(form.orderQty),
+        orderQty: summary.orderQty,
         notes: form.notes || '',
         imageUrl: imageDataUrl || '',
         stages: emptyStageMap(0),
+        productionStarted: false,
         createdAt: serverTimestamp(),
         createdBy: profile?.name || user?.email,
       });
@@ -118,9 +131,6 @@ export default function NewStyle() {
           <Field label={t('বায়ার *', 'Buyer *')}>
             <input className={inputClass} value={form.buyer} onChange={(e) => update('buyer', e.target.value)} />
           </Field>
-          <Field label={t('PO নম্বর', 'PO No.')}>
-            <input className={inputClass} value={form.poNo} onChange={(e) => update('poNo', e.target.value)} />
-          </Field>
           <Field label={t('স্টাইল নাম', 'Style Name')}>
             <input
               className={inputClass}
@@ -142,9 +152,6 @@ export default function NewStyle() {
               onChange={(e) => update('shipDate', e.target.value)}
             />
           </Field>
-          <Field label={t('কালার', 'Colour')}>
-            <input className={inputClass} value={form.colour} onChange={(e) => update('colour', e.target.value)} />
-          </Field>
           <Field label={t('ইয়ার্ন কম্পোজিশন', 'Yarn Composition')}>
             <input
               className={inputClass}
@@ -153,16 +160,10 @@ export default function NewStyle() {
               onChange={(e) => update('yarnComposition', e.target.value)}
             />
           </Field>
-          <Field label={t('অর্ডার কোয়ান্টিটি (পিস) *', 'Order Quantity (pcs) *')}>
-            <input
-              type="number"
-              min="1"
-              className={inputClass}
-              value={form.orderQty}
-              onChange={(e) => update('orderQty', e.target.value)}
-            />
-          </Field>
         </div>
+
+        <PoColourEditor pos={pos} onChange={setPos} />
+
         <Field label={t('নোট', 'Notes')}>
           <textarea
             className={inputClass}
