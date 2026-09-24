@@ -10,14 +10,14 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { Trash2, Pencil, Truck, Send } from 'lucide-react';
+import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { BLOCKS, can, hasAreaAdmin } from '../../lib/constants';
+import { BLOCKS, STAGES, can, hasAreaAdmin } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const LEDGER_LABELS = {
@@ -29,6 +29,8 @@ const LEDGER_LABELS = {
   consumption: { bn: 'নিটিং-এ খরচ হয়েছে', en: 'Consumed in Knitting' },
   blockAdjustIn: { bn: 'ব্লক সংশোধন (যোগ)', en: 'Block Adjustment (Add)' },
   blockAdjustOut: { bn: 'ব্লক সংশোধন (বিয়োগ)', en: 'Block Adjustment (Remove)' },
+  sectionTransfer: { bn: 'সেকশন থেকে সেকশনে ট্রান্সফার', en: 'Section-to-Section Transfer' },
+  returnToSupplier: { bn: 'সাপ্লায়ারকে ফেরত', en: 'Returned to Supplier' },
 };
 
 // This ledger (styles/{id}/yarnLedger) is now the ONLY place yarn stock
@@ -50,6 +52,8 @@ export default function StyleYarnTracking() {
   const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
   const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
   const [adjustForm, setAdjustForm] = useState({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
+  const [transferForm, setTransferForm] = useState({ yarnItemId: '', fromSection: 'knitting', toSection: 'linking', qty: '', date: today(), notes: '' });
+  const [returnForm, setReturnForm] = useState({ yarnItemId: '', block: '', qty: '', date: today(), reason: '' });
   const [error, setError] = useState('');
   const [editingEntry, setEditingEntry] = useState(null);
 
@@ -99,6 +103,7 @@ export default function StyleYarnTracking() {
           consumed: 0,
           adjustIn: 0,
           adjustOut: 0,
+          returned: 0,
         });
       }
       const b = map.get(e.yarnItemId);
@@ -111,16 +116,39 @@ export default function StyleYarnTracking() {
       if (e.type === 'consumption') b.consumed += q;
       if (e.type === 'blockAdjustIn') b.adjustIn += q;
       if (e.type === 'blockAdjustOut') b.adjustOut += q;
+      if (e.type === 'returnToSupplier') b.returned += q;
     });
     return Array.from(map.entries()).map(([yarnItemId, b]) => ({
       yarnItemId,
       ...b,
       balanceToReceive: b.ordered - b.received,
-      atStore: b.received + b.adjustIn - b.adjustOut - b.issuedWinding - b.issuedKnitting,
+      atStore: b.received + b.adjustIn - b.adjustOut - b.issuedWinding - b.issuedKnitting - b.returned,
       atWinding: b.issuedWinding - b.windingToKnitting,
       readyForKnitting: b.issuedKnitting + b.windingToKnitting - b.consumed,
     }));
   }, [ledger]);
+
+  // Per-section (knitting/linking/trimming/mending/sewing/etc.) yarn
+  // balance for a given yarn item — how much this style's yarn is
+  // currently sitting with each production section, so one section can
+  // only transfer onward what it actually still has. Knitting's starting
+  // balance is what it received minus what it has consumed; every other
+  // section starts at zero and only has what's been transferred to it.
+  const sectionBalancesFor = (yarnItemId) => {
+    const base = Object.fromEntries(STAGES.map((s) => [s.key, 0]));
+    const b = balances.find((x) => x.yarnItemId === yarnItemId);
+    if (b) base.knitting = b.readyForKnitting;
+    (ledger || [])
+      .filter((e) => e.yarnItemId === yarnItemId && e.type === 'sectionTransfer')
+      .forEach((e) => {
+        const q = Number(e.qty || 0);
+        base[e.fromSection] = (base[e.fromSection] || 0) - q;
+        base[e.toSection] = (base[e.toSection] || 0) + q;
+      });
+    return STAGES.map((s) => ({ section: s.key, label: s.label, labelEn: s.labelEn, qty: base[s.key] || 0 })).filter(
+      (s) => Math.abs(s.qty) > 0.001
+    );
+  };
 
   // Per-block balance for a given yarn item: how much of THIS style's yarn
   // is physically sitting in each block right now (received into that
@@ -135,7 +163,7 @@ export default function StyleYarnTracking() {
         if ((e.type === 'receipt' || e.type === 'blockAdjustIn') && e.block) {
           map.set(e.block, (map.get(e.block) || 0) + q);
         }
-        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut') && e.block) {
+        if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut' || e.type === 'returnToSupplier') && e.block) {
           map.set(e.block, (map.get(e.block) || 0) - q);
         }
       });
@@ -254,6 +282,79 @@ export default function StyleYarnTracking() {
     setAdjustForm({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
   }
 
+  async function handleTransfer(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === transferForm.yarnItemId);
+    const n = Number(transferForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (transferForm.fromSection === transferForm.toSection) {
+      setError(t('একই সেকশনে ট্রান্সফার করা যাবে না।', 'Cannot transfer within the same section.'));
+      return;
+    }
+    const fromBal = sectionBalancesFor(item.id).find((s) => s.section === transferForm.fromSection)?.qty || 0;
+    if (n > fromBal + 0.001) {
+      setError(
+        t(
+          `${transferForm.fromSection}-এ বর্তমানে ${fromBal.toFixed(2)} lb আছে, এর বেশি ট্রান্সফার করা যাবে না।`,
+          `${transferForm.fromSection} currently has ${fromBal.toFixed(2)} lb — cannot transfer more than that.`
+        )
+      );
+      return;
+    }
+    await addLedgerEntry('sectionTransfer', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      fromSection: transferForm.fromSection,
+      toSection: transferForm.toSection,
+      qty: n,
+      date: transferForm.date,
+      notes: transferForm.notes || '',
+    });
+    setTransferForm({ yarnItemId: '', fromSection: 'knitting', toSection: 'linking', qty: '', date: today(), notes: '' });
+  }
+
+  async function handleReturn(e) {
+    e.preventDefault();
+    setError('');
+    const item = yarnItems.find((y) => y.id === returnForm.yarnItemId);
+    const n = Number(returnForm.qty);
+    if (!item || !n || n <= 0) {
+      setError(t('ইয়ার্ন ও কোয়ান্টিটি দিন।', 'Select yarn and enter quantity.'));
+      return;
+    }
+    if (!returnForm.block) {
+      setError(t('কোন ব্লক থেকে ফেরত দেওয়া হচ্ছে তা নির্বাচন করুন।', 'Select which block this is being returned from.'));
+      return;
+    }
+    if (!returnForm.reason) {
+      setError(t('ফেরত দেওয়ার কারণ লিখুন।', 'Enter the reason for the return.'));
+      return;
+    }
+    const blockBal = blockBalancesFor(item.id).find((b) => b.block === returnForm.block)?.qty || 0;
+    if (n > blockBal + 0.001) {
+      setError(
+        t(
+          `ব্লক ${returnForm.block}-এ বর্তমানে ${blockBal.toFixed(2)} lb আছে, এর বেশি ফেরত দেওয়া যাবে না।`,
+          `Block ${returnForm.block} currently has ${blockBal.toFixed(2)} lb — cannot return more than that.`
+        )
+      );
+      return;
+    }
+    await addLedgerEntry('returnToSupplier', {
+      yarnItemId: item.id,
+      yarnItemName: item.name,
+      qty: n,
+      block: returnForm.block,
+      date: returnForm.date,
+      notes: returnForm.reason,
+    });
+    setReturnForm({ yarnItemId: '', block: '', qty: '', date: today(), reason: '' });
+  }
+
   async function handleDeleteEntry(entry) {
     const ok = window.confirm(
       t(
@@ -270,9 +371,12 @@ export default function StyleYarnTracking() {
     { key: 'type', label: t('ধরন', 'Type'), render: (r) => t(LEDGER_LABELS[r.type]?.bn, LEDGER_LABELS[r.type]?.en) },
     { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
     { key: 'qty', label: t('কোয়ান্টিটি (lb)', 'Quantity (lb)') },
+    { key: 'fromSection', label: t('কোথা থেকে', 'From Section') },
+    { key: 'toSection', label: t('কোথায়', 'To Section') },
     { key: 'block', label: t('ব্লক', 'Block') },
     { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
     { key: 'chalanNo', label: t('চালান নং', 'Chalan No.') },
+    { key: 'notes', label: t('নোট/কারণ', 'Note/Reason') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
 
@@ -284,6 +388,7 @@ export default function StyleYarnTracking() {
     { key: 'atStore', label: t('স্টোরে আছে (lb)', 'At Store (lb)') },
     { key: 'atWinding', label: t('ওয়াইন্ডিং-এ আছে (lb)', 'At Winding (lb)') },
     { key: 'readyForKnitting', label: t('নিটিং-এর জন্য প্রস্তুত (lb)', 'Ready for Knitting (lb)') },
+    { key: 'returned', label: t('সাপ্লায়ারকে ফেরত (lb)', 'Returned to Supplier (lb)') },
   ];
 
   return (
@@ -444,6 +549,151 @@ export default function StyleYarnTracking() {
             </div>
           )}
 
+          {canManage && (
+            <div className="grid gap-4 lg:grid-cols-2">
+              <form onSubmit={handleTransfer} className="space-y-3 rounded-lg border border-line bg-surface p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <ArrowRightLeft size={15} /> {t('সেকশন থেকে সেকশনে ইয়ার্ন ট্রান্সফার', 'Section-to-Section Yarn Transfer')}
+                </h2>
+                <p className="text-xs text-ink-soft">
+                  {t(
+                    'নিটিং-এ দেওয়া ইয়ার্ন থেকে বেঁচে যাওয়া অংশ লিংকিং/ট্রিমিং/মেন্ডিং/সুইং বা অন্য যেকোনো সেকশনে ট্রান্সফার করুন — শুধু সেই সেকশনে যা স্টক আছে তার মধ্যেই।',
+                    'Transfer leftover yarn from Knitting (or any section) onward to Linking/Trimming/Mending/Sewing or any other section — limited to what that section currently has.'
+                  )}
+                </p>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={transferForm.yarnItemId} onChange={(e) => setTransferForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {yarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোন সেকশন থেকে *', 'From Section *')}>
+                    <select value={transferForm.fromSection} onChange={(e) => setTransferForm((f) => ({ ...f, fromSection: e.target.value }))} className={inputClass}>
+                      {STAGES.map((s) => (
+                        <option key={s.key} value={s.key}>{t(s.label, s.labelEn)}</option>
+                      ))}
+                    </select>
+                    {transferForm.yarnItemId && (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t('বর্তমান স্টক', 'Current stock')}: {(sectionBalancesFor(transferForm.yarnItemId).find((s) => s.section === transferForm.fromSection)?.qty || 0).toFixed(2)} lb
+                      </p>
+                    )}
+                  </Field>
+                  <Field label={t('কোন সেকশনে *', 'To Section *')}>
+                    <select value={transferForm.toSection} onChange={(e) => setTransferForm((f) => ({ ...f, toSection: e.target.value }))} className={inputClass}>
+                      {STAGES.map((s) => (
+                        <option key={s.key} value={s.key}>{t(s.label, s.labelEn)}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={transferForm.qty} onChange={(e) => setTransferForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={transferForm.date} onChange={(e) => setTransferForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                </div>
+                <Field label={t('নোট (ঐচ্ছিক)', 'Note (optional)')}>
+                  <input value={transferForm.notes} onChange={(e) => setTransferForm((f) => ({ ...f, notes: e.target.value }))} className={inputClass} />
+                </Field>
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('ট্রান্সফার সেভ করুন', 'Save Transfer')}</button>
+              </form>
+
+              <form onSubmit={handleReturn} className="space-y-3 rounded-lg border border-red/30 bg-red-soft/20 p-5">
+                <h2 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+                  <Undo2 size={15} /> {t('সাপ্লায়ারকে ইয়ার্ন ফেরত', 'Return Yarn to Supplier')}
+                </h2>
+                <p className="text-xs text-ink-soft">
+                  {t(
+                    'ইয়ার্নে সমস্যা থাকলে বা অন্য কোনো কারণে স্টোর থেকে সাপ্লায়ারকে ফেরত দিলে এখানে এন্ট্রি দিন — সংশ্লিষ্ট ব্লকের স্টক থেকে বাদ যাবে।',
+                    'If yarn has a defect or must go back for any other reason, log it here — it will be deducted from that block\'s stock.'
+                  )}
+                </p>
+                <Field label={t('ইয়ার্ন *', 'Yarn *')}>
+                  <select value={returnForm.yarnItemId} onChange={(e) => setReturnForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {yarnItems.map((y) => (
+                      <option key={y.id} value={y.id}>{y.name}</option>
+                    ))}
+                  </select>
+                </Field>
+                <Field label={t('কোন ব্লক থেকে *', 'From Which Block *')}>
+                  <select value={returnForm.block} onChange={(e) => setReturnForm((f) => ({ ...f, block: e.target.value }))} className={inputClass} disabled={!returnForm.yarnItemId}>
+                    <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                    {returnForm.yarnItemId &&
+                      blockBalancesFor(returnForm.yarnItemId).map((b) => (
+                        <option key={b.block} value={b.block}>
+                          {t(`ব্লক ${b.block}`, `Block ${b.block}`)} — {b.qty.toFixed(2)} lb
+                        </option>
+                      ))}
+                  </select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label={t('কোয়ান্টিটি (lb) *', 'Quantity (lb) *')}>
+                    <input type="number" min="0" step="0.01" value={returnForm.qty} onChange={(e) => setReturnForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
+                  </Field>
+                  <Field label={t('তারিখ', 'Date')}>
+                    <input type="date" value={returnForm.date} onChange={(e) => setReturnForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
+                  </Field>
+                </div>
+                <Field label={t('ফেরতের কারণ *', 'Reason for Return *')}>
+                  <input value={returnForm.reason} onChange={(e) => setReturnForm((f) => ({ ...f, reason: e.target.value }))} className={inputClass} placeholder={t('যেমন: ইয়ার্নে ত্রুটি', 'e.g. defective yarn')} />
+                </Field>
+                <button type="submit" className={`${btnPrimary} w-full`}>{t('ফেরত সেভ করুন', 'Save Return')}</button>
+              </form>
+            </div>
+          )}
+
+          <div className="rounded-lg border border-line bg-surface p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-semibold text-ink">{t('সেকশন-ওয়াইজ ইয়ার্ন ব্যালেন্স', 'Section-wise Yarn Balance')}</h2>
+              <ExportBar
+                small
+                title={t('সেকশন-ওয়াইজ ইয়ার্ন ব্যালেন্স', 'Section-wise Yarn Balance')}
+                subtitle={`${style.styleNo} · ${style.buyer}`}
+                filename={`section-yarn-balance-${style.styleNo}`}
+                columns={[
+                  { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
+                  { key: 'section', label: t('সেকশন', 'Section') },
+                  { key: 'qty', label: t('কোয়ান্টিটি (lb)', 'Quantity (lb)') },
+                ]}
+                rows={yarnItems.flatMap((y) => sectionBalancesFor(y.id).map((s) => ({ yarnItemName: y.name, section: t(s.label, s.labelEn), qty: s.qty })))}
+              />
+            </div>
+            {(() => {
+              const rows = yarnItems.flatMap((y) => sectionBalancesFor(y.id).map((s) => ({ yarnItemName: y.name, section: t(s.label, s.labelEn), qty: s.qty })));
+              return rows.length === 0 ? (
+                <EmptyState title={t('এখনো কোনো সেকশন ট্রান্সফার নেই', 'No section balances yet')} />
+              ) : (
+                <div className="scroll-thin overflow-x-auto">
+                  <table className="w-full min-w-[480px] text-sm">
+                    <thead>
+                      <tr className="border-b border-line text-left text-xs text-ink-soft">
+                        <th className="py-2 pr-4 font-medium">{t('ইয়ার্ন', 'Yarn')}</th>
+                        <th className="py-2 pr-4 font-medium">{t('সেকশন', 'Section')}</th>
+                        <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => (
+                        <tr key={i} className="border-b border-line last:border-0">
+                          <td className="py-2 pr-4 text-ink">{r.yarnItemName}</td>
+                          <td className="py-2 pr-4 text-ink-soft">{r.section}</td>
+                          <td className="py-2 pr-4 text-ink-soft">{r.qty.toFixed(2)} lb</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+
           <div className="rounded-lg border border-line bg-surface p-5">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="font-display text-sm font-semibold text-ink">{t('ইয়ার্ন-ভিত্তিক ব্যালেন্স', 'Yarn-wise Balance')}</h2>
@@ -527,6 +777,7 @@ export default function StyleYarnTracking() {
                         <td className="py-2 pr-4 text-ink-soft">{e.yarnItemName}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.qty} lb</td>
                         <td className="py-2 pr-4 text-ink-soft">
+                          {e.fromSection && e.toSection && `${t(STAGES.find((s) => s.key === e.fromSection)?.label, STAGES.find((s) => s.key === e.fromSection)?.labelEn)} → ${t(STAGES.find((s) => s.key === e.toSection)?.label, STAGES.find((s) => s.key === e.toSection)?.labelEn)} `}
                           {e.block && `${t('ব্লক', 'Block')}: ${e.block} `}
                           {e.supplier && `${t('সাপ্লায়ার', 'Supplier')}: ${e.supplier} `}
                           {e.chalanNo && `${t('চালান', 'Chalan')}: ${e.chalanNo}`}
@@ -582,7 +833,7 @@ function EditLedgerEntryModal({ entry, styleId, onClose }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
-  const showBlock = ['receipt', 'issueToWinding', 'issueToKnitting', 'blockAdjustIn', 'blockAdjustOut'].includes(entry.type);
+  const showBlock = ['receipt', 'issueToWinding', 'issueToKnitting', 'blockAdjustIn', 'blockAdjustOut', 'returnToSupplier'].includes(entry.type);
   const showChalan = entry.type === 'receipt';
 
   async function handleSave(e) {

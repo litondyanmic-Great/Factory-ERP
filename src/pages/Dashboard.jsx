@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { StatCard, ProgressBar, EmptyState, Field, inputClass, TrafficLight } from '../components/ui';
+import ExportBar from '../components/ExportBar';
 import { can, FINAL_STAGE_KEY, STAGES, qualityTone } from '../lib/constants';
 import { useLang } from '../lib/i18n';
 import { useSettings } from '../lib/settingsContext';
@@ -49,7 +50,17 @@ export default function Dashboard() {
   }, [styles]);
 
   const activeStyles = (styles || []).filter((s) => (s.stages?.[FINAL_STAGE_KEY] || 0) < s.orderQty);
-  const filteredActiveStyles = activeStyles.filter((s) => buyerFilter === 'all' || s.buyer === buyerFilter);
+  // Styles created with the PO/colour-wise system start life as
+  // `productionStarted: false` — they stay off the Running Styles list
+  // until the first production entry is logged against them (see
+  // StyleDetail's handleAddEntry), and show up instead under "Active
+  // Order" below. Styles from before this feature have no
+  // `productionStarted` field at all, so `!== false` keeps them exactly
+  // where they always were, in Running Styles.
+  const runningStyles = activeStyles.filter((s) => s.productionStarted !== false);
+  const newOrderStyles = (styles || []).filter((s) => s.productionStarted === false);
+  const filteredActiveStyles = runningStyles.filter((s) => buyerFilter === 'all' || s.buyer === buyerFilter);
+  const filteredNewOrderStyles = newOrderStyles.filter((s) => buyerFilter === 'all' || s.buyer === buyerFilter);
 
   const totalOrderQty = (styles || []).reduce((sum, s) => sum + Number(s.orderQty || 0), 0);
   const totalPacked = (styles || []).reduce((sum, s) => sum + Number(s.stages?.[FINAL_STAGE_KEY] || 0), 0);
@@ -133,7 +144,7 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
-        <StatCard label={t('চলমান স্টাইল', 'Running Styles')} value={loading ? '—' : activeStyles.length} />
+        <StatCard label={t('চলমান স্টাইল', 'Running Styles')} value={loading ? '—' : runningStyles.length} />
         <StatCard label={t('মোট অর্ডার কোয়ান্টিটি', 'Total Order Quantity')} value={loading ? '—' : totalOrderQty.toLocaleString('en-US')} />
         <StatCard label={t('মোট প্যাকড (সর্বমোট)', 'Total Packed (all time)')} value={loading ? '—' : totalPacked.toLocaleString('en-US')} tone="green" />
         <StatCard
@@ -180,6 +191,51 @@ export default function Dashboard() {
           </div>
         )}
       </section>
+
+      {newOrderStyles.length > 0 && (
+        <section className="rounded-lg border border-line bg-surface p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-display text-sm font-semibold text-ink">{t('অ্যাকটিভ অর্ডার (প্রোডাকশন এখনো শুরু হয়নি)', 'Active Order (production not started yet)')}</h2>
+              <p className="mt-0.5 text-xs text-ink-soft">
+                {t(
+                  'নতুন তৈরি করা স্টাইল, যেগুলোতে এখনো কোনো প্রোডাকশন এন্ট্রি দেওয়া হয়নি। প্রথম এন্ট্রি দেওয়ার পর এটি অটোমেটিক "চলমান স্টাইল"-এ চলে যাবে।',
+                  'Newly created styles with no production entry yet. Once the first entry is logged, it moves to "Running Styles" automatically.'
+                )}
+              </p>
+            </div>
+            <ExportBar
+              small
+              title={t('অ্যাকটিভ অর্ডার রিপোর্ট', 'Active Order Report')}
+              filename="active-order-report"
+              columns={[
+                { key: 'styleNo', label: t('স্টাইল নম্বর', 'Style No.') },
+                { key: 'styleName', label: t('স্টাইল নাম', 'Style Name') },
+                { key: 'buyer', label: t('বায়ার', 'Buyer') },
+                { key: 'poNo', label: 'PO' },
+                { key: 'orderQty', label: t('অর্ডার কোয়ান্টিটি', 'Order Qty') },
+                { key: 'orderDate', label: t('তারিখ', 'Date') },
+                { key: 'shipDate', label: t('শিপমেন্ট', 'Shipment') },
+              ]}
+              rows={filteredNewOrderStyles}
+            />
+          </div>
+          <div className="space-y-2">
+            {filteredNewOrderStyles.map((s) => (
+              <Link
+                to={`/production/${s.id}`}
+                key={s.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-line bg-paper px-3 py-2 text-sm hover:border-indigo/40"
+              >
+                <span className="font-medium text-ink">
+                  {s.styleNo} {s.styleName && <span className="text-ink-soft">— {s.styleName}</span>}
+                </span>
+                <span className="text-ink-soft">{s.buyer} · {t('অর্ডার', 'Order')}: {Number(s.orderQty || 0).toLocaleString('en-US')}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-6 md:grid-cols-2">
         <div className="rounded-lg border border-line bg-surface p-5">

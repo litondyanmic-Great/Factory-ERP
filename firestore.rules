@@ -65,6 +65,9 @@ service cloud.firestore {
     match /{path=**}/productionEntries/{entryId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
     }
+    match /{path=**}/shipments/{shipmentId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+    }
 
     // system/meta — a single doc used only to decide whether the very next
     // signup becomes the first admin. Any signed-in user may read it (the
@@ -146,6 +149,13 @@ service cloud.firestore {
         // the routine dyeing order / receipt / issue types below.
         allow create: if (request.resource.data.type in ['blockAdjustIn', 'blockAdjustOut'])
           ? hasAdminArea('inventory')
+          : (request.resource.data.type == 'sectionTransfer')
+            ? (hasRole(['admin'])
+                || canEnterSection(request.resource.data.fromSection)
+                || canEnterSection(request.resource.data.toSection)
+                || canEnterSection('yarnStore'))
+          : (request.resource.data.type == 'returnToSupplier')
+            ? (hasRole(['admin', 'store']) || canEnterSection('yarnStore'))
           : (hasRole(['admin', 'store'])
               || canEnterSection('yarnStore')
               || canEnterSection('winding')
@@ -164,6 +174,17 @@ service cloud.firestore {
         allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
         allow create: if hasRole(['admin', 'store']) || canEnterSection('accessoriesStore');
         allow update, delete: if hasAdminArea('inventory');
+      }
+
+      // Style-wise shipment records: GPQ logs final inspection + shipment
+      // for this style (can be logged per PO/colour or for the whole
+      // style). Read is broad (production/store/merchandising/GPQ/IE all
+      // need visibility for reports); only GPQ/admin/quality-or-
+      // production-area-admin can log or correct one.
+      match /shipments/{shipmentId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+        allow create, update: if hasRole(['admin', 'gpq']) || hasAdminArea('quality') || hasAdminArea('production');
+        allow delete: if isAdmin();
       }
     }
 

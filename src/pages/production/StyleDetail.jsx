@@ -66,6 +66,8 @@ export default function StyleDetail() {
   const [note, setNote] = useState('');
   const [yarnItemId, setYarnItemId] = useState('');
   const [yarnQty, setYarnQty] = useState('');
+  const [entryPoNo, setEntryPoNo] = useState('');
+  const [entryColour, setEntryColour] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [editingStyle, setEditingStyle] = useState(false);
@@ -180,13 +182,22 @@ export default function StyleDetail() {
         enteredBy: profile?.name || user?.email,
         createdAt: serverTimestamp(),
       };
+      if (entryPoNo) entryData.poNo = entryPoNo;
+      if (entryColour) entryData.colour = entryColour;
       if (stage === 'knitting' && yarnItemId) {
         entryData.yarnItemId = yarnItemId;
         entryData.yarnItemName = yarnItems.find((y) => y.id === yarnItemId)?.name || '';
         entryData.yarnQty = Number(yarnQty);
       }
       const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
-      await updateDoc(doc(db, 'styles', id), { [`stages.${stage}`]: increment(n) });
+      const styleUpdate = { [`stages.${stage}`]: increment(n) };
+      // The very first production entry against a style is what "starts"
+      // it — before that it's only an Active Order on the dashboard, not
+      // yet a Running Style. Styles created before this feature existed
+      // have no `productionStarted` field at all, so they are treated as
+      // already running (see Dashboard) and are left untouched here.
+      if (style?.productionStarted === false) styleUpdate.productionStarted = true;
+      await updateDoc(doc(db, 'styles', id), styleUpdate);
       if (entryData.yarnItemId) {
         await updateDoc(doc(db, 'inventoryItems', entryData.yarnItemId), {
           currentStock: increment(-entryData.yarnQty),
@@ -213,6 +224,8 @@ export default function StyleDetail() {
       setNote('');
       setYarnItemId('');
       setYarnQty('');
+      setEntryPoNo('');
+      setEntryColour('');
     } catch (err) {
       setError(t('এন্ট্রি যোগ করা যায়নি।', 'Could not add entry.'));
     } finally {
@@ -250,7 +263,7 @@ export default function StyleDetail() {
     if (!ok) return;
     setBusy(true);
     try {
-      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger'];
+      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger', 'shipments'];
       for (const sub of subcollections) {
         const snap = await getDocs(collection(db, 'styles', id, sub));
         const docs = snap.docs;
@@ -289,10 +302,33 @@ export default function StyleDetail() {
   const entryExportColumns = [
     { key: 'date', label: t('তারিখ', 'Date') },
     { key: 'stage', label: t('স্টেজ', 'Stage'), render: (r) => stageLabel(r.stage, lang) },
+    { key: 'poNo', label: t('PO', 'PO') },
+    { key: 'colour', label: t('কালার', 'Colour') },
     { key: 'quantity', label: t('কোয়ান্টিটি', 'Quantity') },
     { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
     { key: 'yarnQty', label: t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
+  ];
+
+  // PO/colour-wise stage totals, built from whatever entries carry a poNo
+  // (older/plain entries stay counted only in the overall stage total
+  // above — they simply don't appear in this breakdown table).
+  const poColourBreakdown = (() => {
+    const map = new Map();
+    (entries || []).forEach((e) => {
+      if (!e.poNo) return;
+      const key = `${e.poNo}||${e.colour || ''}`;
+      if (!map.has(key)) map.set(key, { poNo: e.poNo, colour: e.colour || t('মিশ্র', 'Mixed'), stages: {} });
+      const row = map.get(key);
+      row.stages[e.stage] = (row.stages[e.stage] || 0) + Number(e.quantity || 0);
+    });
+    return Array.from(map.values());
+  })();
+
+  const poColourExportColumns = [
+    { key: 'poNo', label: 'PO' },
+    { key: 'colour', label: t('কালার', 'Colour') },
+    ...STAGES.map((s) => ({ key: `stages.${s.key}`, label: lang === 'en' ? s.labelEn : s.label, render: (r) => r.stages[s.key] || 0 })),
   ];
 
   return (
@@ -435,6 +471,46 @@ export default function StyleDetail() {
         </div>
       </div>
 
+      {poColourBreakdown.length > 0 && (
+        <div className="rounded-lg border border-line bg-surface p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-display text-sm font-semibold text-ink">{t('PO / কালার-ওয়াইজ প্রোডাকশন ব্রেকডাউন', 'PO / Colour-wise Production Breakdown')}</h2>
+            <ExportBar
+              small
+              title={t('PO / কালার-ওয়াইজ প্রোডাকশন', 'PO / Colour-wise Production')}
+              subtitle={`${style.styleNo} · ${style.buyer}`}
+              filename={`po-colour-production-${style.styleNo}`}
+              columns={poColourExportColumns}
+              rows={poColourBreakdown}
+            />
+          </div>
+          <div className="scroll-thin overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
+              <thead>
+                <tr className="border-b border-line text-left text-xs text-ink-soft">
+                  <th className="py-2 pr-4 font-medium">PO</th>
+                  <th className="py-2 pr-4 font-medium">{t('কালার', 'Colour')}</th>
+                  {STAGES.map((s) => (
+                    <th key={s.key} className="py-2 pr-4 font-medium">{lang === 'en' ? s.labelEn : s.label}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {poColourBreakdown.map((r, i) => (
+                  <tr key={i} className="border-b border-line last:border-0">
+                    <td className="py-2 pr-4 text-ink">{r.poNo}</td>
+                    <td className="py-2 pr-4 text-ink-soft">{r.colour}</td>
+                    {STAGES.map((s) => (
+                      <td key={s.key} className="py-2 pr-4 text-ink-soft">{(r.stages[s.key] || 0).toLocaleString('en-US')}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {can(profile?.role, 'production:entry') && (
         <div className="rounded-lg border border-line bg-surface p-5">
           <h2 className="mb-4 font-display text-sm font-semibold text-ink">{t('প্রোডাকশন এন্ট্রি', 'Production Entry')}</h2>
@@ -478,6 +554,39 @@ export default function StyleDetail() {
                   <input value={note} onChange={(e) => setNote(e.target.value)} className={inputClass} />
                 </Field>
               </div>
+
+              {Array.isArray(style.pos) && style.pos.length > 0 && (
+                <div className="grid gap-4 rounded-md border border-line bg-paper/50 p-3 sm:grid-cols-2">
+                  <Field label={t('PO (ঐচ্ছিক — কালার-ওয়াইজ ট্র্যাকিং করতে চাইলে দিন)', 'PO (optional — pick to track colour-wise)')}>
+                    <select
+                      value={entryPoNo}
+                      onChange={(e) => {
+                        setEntryPoNo(e.target.value);
+                        setEntryColour('');
+                      }}
+                      className={inputClass}
+                    >
+                      <option value="">{t('সব PO (টোটাল এন্ট্রি)', 'All PO (total entry)')}</option>
+                      {style.pos.map((po, i) => (
+                        <option key={i} value={po.poNo}>{po.poNo}</option>
+                      ))}
+                    </select>
+                  </Field>
+                  <Field label={t('কালার (ঐচ্ছিক)', 'Colour (optional)')}>
+                    <select
+                      value={entryColour}
+                      onChange={(e) => setEntryColour(e.target.value)}
+                      className={inputClass}
+                      disabled={!entryPoNo}
+                    >
+                      <option value="">{t('সব কালার', 'All colours')}</option>
+                      {(style.pos.find((po) => po.poNo === entryPoNo)?.colours || []).map((c, i) => (
+                        <option key={i} value={c.colour}>{c.colour}</option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+              )}
 
               {stage === 'knitting' && (
                 <div className="grid gap-4 rounded-md border border-line bg-paper/50 p-3 sm:grid-cols-2">
@@ -585,6 +694,7 @@ export default function StyleDetail() {
                 <tr className="border-b border-line text-left text-xs text-ink-soft">
                   <th className="py-2 pr-4 font-medium">{t('তারিখ', 'Date')}</th>
                   <th className="py-2 pr-4 font-medium">{t('স্টেজ', 'Stage')}</th>
+                  <th className="py-2 pr-4 font-medium">PO / {t('কালার', 'Colour')}</th>
                   <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
                   <th className="py-2 pr-4 font-medium">{t('এন্ট্রি করেছেন', 'Entered By')}</th>
                   <th className="py-2 pr-4 font-medium"></th>
@@ -595,6 +705,13 @@ export default function StyleDetail() {
                   <tr key={e.id} className="border-b border-line last:border-0">
                     <td className="py-2 pr-4 text-ink-soft">{e.date}</td>
                     <td className="py-2 pr-4 text-ink">{stageLabel(e.stage, lang)}</td>
+                    <td className="py-2 pr-4 text-ink-soft">
+                      {e.poNo || e.colour ? (
+                        <>{e.poNo}{e.poNo && e.colour ? ' / ' : ''}{e.colour}</>
+                      ) : (
+                        <span className="text-ink-soft/60">{t('টোটাল', 'Total')}</span>
+                      )}
+                    </td>
                     <td className="py-2 pr-4 text-ink-soft">
                       {e.quantity}
                       {e.yarnItemName && (

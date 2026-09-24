@@ -124,6 +124,7 @@ export function can(role, action) {
       'inventory:view',
       'quality:view',
       'report:view',
+      'shipment:view',
     ],
     production: [
       'style:view',
@@ -132,6 +133,7 @@ export function can(role, action) {
       'quality:entry',
       'quality:view',
       'report:view',
+      'shipment:view',
     ],
     store: [
       'inventory:manage',
@@ -141,6 +143,7 @@ export function can(role, action) {
       'yarnStore:entry',
       'accessories:entry',
       'report:view',
+      'shipment:view',
     ],
     // GPQ (Group Quality): broad visibility + entry rights across quality
     // and production, elevated further per-area via adminAreas above.
@@ -151,6 +154,8 @@ export function can(role, action) {
       'quality:view',
       'inventory:view',
       'report:view',
+      'shipment:view',
+      'shipment:entry',
     ],
     // IE (Industrial Engineering): style/production/report visibility and
     // style editing (capacity, GG, order qty corrections etc.), elevated
@@ -161,6 +166,7 @@ export function can(role, action) {
       'inventory:view',
       'quality:view',
       'report:view',
+      'shipment:view',
     ],
   };
   return (table[role] || []).includes(action);
