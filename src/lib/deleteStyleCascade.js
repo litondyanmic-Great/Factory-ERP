@@ -1,7 +1,7 @@
 import { collection, deleteDoc, doc, getDocs, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 
-const STYLE_SUBCOLLECTIONS = ['yarnLedger', 'accessoryLedger', 'productionEntries', 'shipments'];
+const STYLE_SUBCOLLECTIONS = ['yarnLedger', 'accessoryLedger', 'productionEntries', 'shipments', 'yarnIssueApprovals', 'ieRecords'];
 
 // Firestore never deletes a subcollection just because its parent document
 // was deleted — every yarnLedger/accessoryLedger/productionEntries entry

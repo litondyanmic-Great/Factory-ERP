@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   addDoc,
   collection,
+  collectionGroup,
   deleteDoc,
   doc,
   onSnapshot,
@@ -9,15 +10,16 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  where,
 } from 'firebase/firestore';
-import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2 } from 'lucide-react';
+import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2, ShieldAlert, Check, X } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { BLOCKS, STAGES, can, hasAreaAdmin } from '../../lib/constants';
+import { BLOCKS, STAGES, can, hasAreaAdmin, isYarnOverageApprover } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const LEDGER_LABELS = {
@@ -50,12 +52,17 @@ export default function StyleYarnTracking() {
   const [ledger, setLedger] = useState(null);
 
   const [receiveForm, setReceiveForm] = useState({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
-  const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
+  const [issueForm, setIssueForm] = useState({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
   const [adjustForm, setAdjustForm] = useState({ yarnItemId: '', direction: 'in', block: '', qty: '', date: today(), reason: '' });
   const [transferForm, setTransferForm] = useState({ yarnItemId: '', fromSection: 'knitting', toSection: 'linking', qty: '', date: today(), notes: '' });
   const [returnForm, setReturnForm] = useState({ yarnItemId: '', block: '', qty: '', date: today(), reason: '' });
   const [error, setError] = useState('');
+  const [issueNotice, setIssueNotice] = useState('');
   const [editingEntry, setEditingEntry] = useState(null);
+  const [pendingApprovals, setPendingApprovals] = useState(null);
+  const [approverBusyId, setApproverBusyId] = useState('');
+
+  const canApprove = isYarnOverageApprover(profile);
 
   function today() {
     return new Date().toISOString().slice(0, 10);
@@ -67,6 +74,22 @@ export default function StyleYarnTracking() {
     );
     return unsub;
   }, []);
+
+  // Cross-style pending yarn-issue-over-buffer approval requests, only for
+  // Higher Authority users (Admin/PD/MD/DGM) — they need to see this
+  // regardless of which style they currently have open, so this is a
+  // collectionGroup query across every style's yarnIssueApprovals.
+  useEffect(() => {
+    if (!canApprove) {
+      setPendingApprovals(null);
+      return;
+    }
+    const q = query(collectionGroup(db, 'yarnIssueApprovals'), where('status', '==', 'pending'));
+    const unsub = onSnapshot(q, (snap) =>
+      setPendingApprovals(snap.docs.map((d) => ({ id: d.id, styleId: d.ref.parent.parent.id, ...d.data() })))
+    );
+    return unsub;
+  }, [canApprove]);
 
   useEffect(() => {
     if (!styleId) {
@@ -212,9 +235,18 @@ export default function StyleYarnTracking() {
     setReceiveForm({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
   }
 
+  // Standard allowance for issuing yarn to Knitting: (order qty / 12) ×
+  // contact weight (lb per dozen) = the base requirement, +10% is allowed
+  // freely as normal wastage/buffer. Anything beyond that 110% needs a
+  // Higher Authority (Admin/PD/MD/DGM) to approve — see pendingApprovals.
+  const contactWeightBaseQty =
+    style && issueForm.contactWeight ? (Number(style.orderQty || 0) / 12) * Number(issueForm.contactWeight) : 0;
+  const contactWeightBufferQty = contactWeightBaseQty * 1.1;
+
   async function handleIssue(e) {
     e.preventDefault();
     setError('');
+    setIssueNotice('');
     const item = yarnItems.find((y) => y.id === issueForm.yarnItemId);
     const n = Number(issueForm.qty);
     if (!item || !n) {
@@ -235,6 +267,45 @@ export default function StyleYarnTracking() {
       );
       return;
     }
+
+    const contactMeta =
+      issueForm.destination === 'knitting' && issueForm.contactWeight
+        ? {
+            contactWeight: Number(issueForm.contactWeight),
+            standardQty: Number(contactWeightBaseQty.toFixed(2)),
+            bufferQty: Number(contactWeightBufferQty.toFixed(2)),
+          }
+        : null;
+
+    // Over the standard+10% buffer -> this needs Higher Authority sign-off
+    // before the yarn actually leaves the store. File a request instead of
+    // issuing immediately.
+    if (contactMeta && n > contactMeta.bufferQty + 0.001) {
+      await addDoc(collection(db, 'styles', styleId, 'yarnIssueApprovals'), {
+        status: 'pending',
+        styleNo: style?.styleNo || '',
+        buyer: style?.buyer || '',
+        yarnItemId: item.id,
+        yarnItemName: item.name,
+        requestedQty: n,
+        block: issueForm.block,
+        destination: issueForm.destination,
+        date: issueForm.date,
+        notes: issueForm.notes || '',
+        ...contactMeta,
+        requestedBy: profile?.name || user?.email,
+        createdAt: serverTimestamp(),
+      });
+      setIssueNotice(
+        t(
+          `স্ট্যান্ডার্ড কনজাম্পশন (${contactMeta.standardQty} lb) + ১০% বাফার (${contactMeta.bufferQty} lb)-এর বেশি হওয়ায় এই ইস্যু সরাসরি হয়নি — হায়ার অথরিটি (Admin/PD/MD/DGM)-এর অনুমোদনের জন্য রিকোয়েস্ট পাঠানো হয়েছে।`,
+          `This exceeds standard consumption (${contactMeta.standardQty} lb) + 10% buffer (${contactMeta.bufferQty} lb), so it wasn't issued directly — a request has been sent for Higher Authority (Admin/PD/MD/DGM) approval.`
+        )
+      );
+      setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
+      return;
+    }
+
     await addLedgerEntry(issueForm.destination === 'winding' ? 'issueToWinding' : 'issueToKnitting', {
       yarnItemId: item.id,
       yarnItemName: item.name,
@@ -242,8 +313,56 @@ export default function StyleYarnTracking() {
       block: issueForm.block,
       date: issueForm.date,
       notes: issueForm.notes || '',
+      ...(contactMeta || {}),
     });
-    setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', date: today(), notes: '' });
+    setIssueForm({ yarnItemId: '', destination: 'winding', block: '', qty: '', contactWeight: '', date: today(), notes: '' });
+  }
+
+  async function handleApproveIssue(req) {
+    setApproverBusyId(req.id);
+    try {
+      await addDoc(collection(db, 'styles', req.styleId, 'yarnLedger'), {
+        type: req.destination === 'winding' ? 'issueToWinding' : 'issueToKnitting',
+        styleNo: req.styleNo || '',
+        yarnItemId: req.yarnItemId,
+        yarnItemName: req.yarnItemName,
+        qty: req.requestedQty,
+        block: req.block,
+        date: req.date,
+        notes: req.notes || '',
+        contactWeight: req.contactWeight,
+        standardQty: req.standardQty,
+        bufferQty: req.bufferQty,
+        approvedOverage: true,
+        approvedBy: profile?.name || user?.email,
+        enteredBy: req.requestedBy,
+        createdAt: serverTimestamp(),
+      });
+      await updateDoc(doc(db, 'styles', req.styleId, 'yarnIssueApprovals', req.id), {
+        status: 'approved',
+        approvedBy: profile?.name || user?.email,
+        approvedAt: serverTimestamp(),
+      });
+    } finally {
+      setApproverBusyId('');
+    }
+  }
+
+  async function handleRejectIssue(req) {
+    const reason = window.prompt(
+      t('বাতিলের কারণ লিখুন (ঐচ্ছিক):', 'Enter reason for rejection (optional):')
+    );
+    setApproverBusyId(req.id);
+    try {
+      await updateDoc(doc(db, 'styles', req.styleId, 'yarnIssueApprovals', req.id), {
+        status: 'rejected',
+        rejectedBy: profile?.name || user?.email,
+        rejectedAt: serverTimestamp(),
+        rejectionReason: reason || '',
+      });
+    } finally {
+      setApproverBusyId('');
+    }
   }
 
   async function handleAdjust(e) {
@@ -403,6 +522,48 @@ export default function StyleYarnTracking() {
         </p>
       </div>
 
+      {canApprove && pendingApprovals && pendingApprovals.length > 0 && (
+        <div className="rounded-lg border border-amber bg-amber-soft/40 p-5">
+          <h2 className="mb-3 flex items-center gap-2 font-display text-sm font-semibold text-ink">
+            <ShieldAlert size={16} className="text-amber" />
+            {t('অনুমোদনের অপেক্ষায় থাকা ইয়ার্ন ইস্যু রিকোয়েস্ট', 'Yarn Issue Requests Awaiting Approval')}
+            <span className="rounded-full bg-amber px-2 py-0.5 text-xs text-white">{pendingApprovals.length}</span>
+          </h2>
+          <div className="space-y-2">
+            {pendingApprovals.map((req) => (
+              <div key={req.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-surface p-3 text-sm">
+                <div>
+                  <p className="font-medium text-ink">
+                    {req.styleNo} · {req.yarnItemName} — {req.requestedQty} lb {t('চাওয়া হয়েছে', 'requested')}
+                  </p>
+                  <p className="text-xs text-ink-soft">
+                    {t('স্ট্যান্ডার্ড', 'Standard')}: {req.standardQty} lb · {t('বাফারসহ সর্বোচ্চ', 'Max w/ buffer')}: {req.bufferQty} lb ·{' '}
+                    {t('ব্লক', 'Block')}: {req.block} · {req.requestedBy} · {req.date}
+                  </p>
+                  {req.notes && <p className="text-xs text-ink-soft">{t('নোট', 'Note')}: {req.notes}</p>}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleApproveIssue(req)}
+                    disabled={approverBusyId === req.id}
+                    className="inline-flex items-center gap-1 rounded-md bg-green px-3 py-1.5 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                  >
+                    <Check size={13} /> {t('অনুমোদন', 'Approve')}
+                  </button>
+                  <button
+                    onClick={() => handleRejectIssue(req)}
+                    disabled={approverBusyId === req.id}
+                    className="inline-flex items-center gap-1 rounded-md border border-red/30 bg-red-soft px-3 py-1.5 text-xs font-medium text-red hover:bg-red/10 disabled:opacity-50"
+                  >
+                    <X size={13} /> {t('বাতিল', 'Reject')}
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="max-w-md">
         <StyleSearchSelect value={styleId} onChange={(id) => setStyleId(id)} />
       </div>
@@ -486,12 +647,61 @@ export default function StyleYarnTracking() {
                     </p>
                   )}
                 </Field>
+                {issueForm.destination === 'knitting' && style && (
+                  <div className="rounded-md border border-indigo/30 bg-indigo-soft/40 p-3">
+                    <Field label={t('কন্টাক্ট ওয়েট (lb/ডজন)', 'Contact Weight (lb/dozen)')}>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.001"
+                        value={issueForm.contactWeight}
+                        onChange={(e) => setIssueForm((f) => ({ ...f, contactWeight: e.target.value }))}
+                        className={inputClass}
+                        placeholder={t('যেমন: ০.৩৫', 'e.g. 0.35')}
+                      />
+                    </Field>
+                    {issueForm.contactWeight ? (
+                      <div className="mt-2 space-y-1 text-xs text-ink-soft">
+                        <p>
+                          {t('অর্ডার কোয়ান্টিটি', 'Order Qty')}: {Number(style.orderQty || 0).toLocaleString('en-US')} ÷ 12 × {issueForm.contactWeight} ={' '}
+                          <span className="font-semibold text-ink">{contactWeightBaseQty.toFixed(2)} lb</span> ({t('স্ট্যান্ডার্ড', 'standard')})
+                        </p>
+                        <p>
+                          +10% {t('বাফারসহ সর্বোচ্চ', 'buffer, max allowed')}: <span className="font-semibold text-ink">{contactWeightBufferQty.toFixed(2)} lb</span>
+                        </p>
+                        {Number(issueForm.qty) > contactWeightBufferQty && (
+                          <p className="text-amber">
+                            {t(
+                              'এর বেশি ইস্যু করলে হায়ার অথরিটির (Admin/PD/MD/DGM) অনুমোদন লাগবে — সাবমিট করলে অনুমোদনের অনুরোধ পাঠানো হবে।',
+                              'Issuing more than this needs Higher Authority (Admin/PD/MD/DGM) approval — submitting will send an approval request instead of issuing directly.'
+                            )}
+                          </p>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setIssueForm((f) => ({ ...f, qty: contactWeightBufferQty.toFixed(2) }))}
+                          className="text-indigo underline hover:text-indigo-deep"
+                        >
+                          {t('সর্বোচ্চ অনুমোদিত পরিমাণ বসান', 'Fill max allowed amount')}
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-xs text-ink-soft">
+                        {t(
+                          'কন্টাক্ট ওয়েট দিলে অর্ডার কোয়ান্টিটি অনুযায়ী স্ট্যান্ডার্ড ইয়ার্ন প্রয়োজন অটো ক্যালকুলেট হবে (ঐচ্ছিক)।',
+                          'Enter contact weight to auto-calculate standard yarn requirement from order qty (optional).'
+                        )}
+                      </p>
+                    )}
+                  </div>
+                )}
                 <Field label={t('ইস্যু কোয়ান্টিটি (lb) *', 'Issue Quantity (lb) *')}>
                   <input type="number" min="0" step="0.01" value={issueForm.qty} onChange={(e) => setIssueForm((f) => ({ ...f, qty: e.target.value }))} className={inputClass} />
                 </Field>
                 <Field label={t('তারিখ', 'Date')}>
                   <input type="date" value={issueForm.date} onChange={(e) => setIssueForm((f) => ({ ...f, date: e.target.value }))} className={inputClass} />
                 </Field>
+                {issueNotice && <p className="rounded-md border border-indigo/30 bg-indigo-soft p-2 text-xs text-indigo">{issueNotice}</p>}
                 <button type="submit" className={`${btnPrimary} w-full`}>{t('ইস্যু সেভ করুন', 'Save Issue')}</button>
               </form>
 
@@ -781,6 +991,12 @@ export default function StyleYarnTracking() {
                           {e.block && `${t('ব্লক', 'Block')}: ${e.block} `}
                           {e.supplier && `${t('সাপ্লায়ার', 'Supplier')}: ${e.supplier} `}
                           {e.chalanNo && `${t('চালান', 'Chalan')}: ${e.chalanNo}`}
+                          {e.contactWeight && `${t('কন্টাক্ট ওয়েট', 'Contact Wt')}: ${e.contactWeight} lb/dz `}
+                          {e.approvedOverage && (
+                            <span className="ml-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[10px] font-medium text-amber">
+                              {t('হায়ার অথরিটি অনুমোদিত', 'Higher-authority approved')}
+                            </span>
+                          )}
                           {e.notes}
                         </td>
                         <td className="py-2 pr-4">

@@ -25,6 +25,7 @@ import QualityReports from './pages/quality/QualityReports';
 import ZeroThreadReport from './pages/quality/ZeroThreadReport';
 import QualityTrends from './pages/quality/QualityTrends';
 import ShipmentTracking from './pages/quality/ShipmentTracking';
+import IEDashboard from './pages/ie/IEDashboard';
 import StyleAccessoryTracking from './pages/inventory/StyleAccessoryTracking';
 import YarnBlockManager from './pages/inventory/YarnBlockManager';
 import YarnLeftoverBank from './pages/inventory/YarnLeftoverBank';
@@ -209,6 +210,14 @@ export default function App() {
               element={
                 <ProtectedRoute permission="shipment:view">
                   <ShipmentTracking />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/ie"
+              element={
+                <ProtectedRoute permission="ie:view">
+                  <IEDashboard />
                 </ProtectedRoute>
               }
             />

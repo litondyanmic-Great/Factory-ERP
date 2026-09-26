@@ -125,6 +125,7 @@ export function can(role, action) {
       'quality:view',
       'report:view',
       'shipment:view',
+      'ie:view',
     ],
     production: [
       'style:view',
@@ -134,6 +135,7 @@ export function can(role, action) {
       'quality:view',
       'report:view',
       'shipment:view',
+      'ie:view',
     ],
     store: [
       'inventory:manage',
@@ -159,7 +161,8 @@ export function can(role, action) {
     ],
     // IE (Industrial Engineering): style/production/report visibility and
     // style editing (capacity, GG, order qty corrections etc.), elevated
-    // further per-area via adminAreas above.
+    // further per-area via adminAreas above. Owns the IE tab: SMV/target
+    // setting and actual-vs-target tracking per style/stage.
     ie: [
       'style:view',
       'style:edit',
@@ -167,6 +170,8 @@ export function can(role, action) {
       'quality:view',
       'report:view',
       'shipment:view',
+      'ie:view',
+      'ie:entry',
     ],
   };
   return (table[role] || []).includes(action);
@@ -182,6 +187,16 @@ export function canEnterSection(profile, sectionKey) {
   if (profile.role === 'admin') return true;
   const sections = Array.isArray(profile.sections) ? profile.sections : [];
   return sections.includes(sectionKey);
+}
+
+// True if this person can approve a yarn issue request that exceeds the
+// standard consumption + 10% buffer — i.e. is one of the factory's named
+// "Higher Authority" designations (Admin, PD, MD, DGM), granted one at a
+// time via users/{uid}.canApproveYarnOverage by an existing admin.
+export function isYarnOverageApprover(profile) {
+  if (!profile) return false;
+  if (profile.role === 'admin') return true;
+  return profile.canApproveYarnOverage === true;
 }
 
 export function emptyStageMap(fill = 0) {

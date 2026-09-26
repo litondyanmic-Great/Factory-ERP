@@ -11,13 +11,13 @@ import {
   serverTimestamp,
   updateDoc,
 } from 'firebase/firestore';
-import { PackageCheck, Trash2, Pencil } from 'lucide-react';
+import { PackageCheck, Trash2, Pencil, Lock } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { can, hasAreaAdmin } from '../../lib/constants';
+import { can, hasAreaAdmin, FINAL_STAGE_KEY } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const RESULTS = [
@@ -57,6 +57,8 @@ export default function ShipmentTracking() {
     shipDate: today(),
     notes: '',
   });
+  const [override, setOverride] = useState(false);
+  const [overrideReason, setOverrideReason] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
@@ -66,6 +68,12 @@ export default function ShipmentTracking() {
   const [to, setTo] = useState('');
 
   const canEnter = can(profile?.role, 'shipment:entry') || hasAreaAdmin(profile, 'quality') || hasAreaAdmin(profile, 'production');
+  // Final inspection & shipment is gated on packing: a piece can't be
+  // shipped before it's actually packed. Only admin / quality-area-admin /
+  // production-area-admin can override this gate (e.g. genuine exceptions),
+  // and doing so requires typing a reason, which is saved on the record.
+  const canOverride = hasAreaAdmin(profile, 'quality') || hasAreaAdmin(profile, 'production');
+  const packedQty = Number(style?.stages?.[FINAL_STAGE_KEY] || 0);
 
   useEffect(() => {
     if (!styleId) {
@@ -109,6 +117,8 @@ export default function ShipmentTracking() {
 
   const totalShippedForStyle = (shipments || []).reduce((sum, s) => sum + Number(s.shippedQty || 0), 0);
   const remainingForStyle = style ? Number(style.orderQty || 0) - totalShippedForStyle : 0;
+  const availableToShip = packedQty - totalShippedForStyle;
+  const qtyExceedsPacked = Number(form.shippedQty || 0) > availableToShip;
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -122,9 +132,33 @@ export default function ShipmentTracking() {
       setError(t('ফাইনাল ইন্সপেকশন ও শিপমেন্ট তারিখ দিন।', 'Enter final inspection and shipment dates.'));
       return;
     }
+    if (qty > availableToShip) {
+      if (!canOverride) {
+        setError(
+          t(
+            `প্যাকিং হয়েছে মাত্র ${packedQty.toLocaleString('en-US')} পিস (আগেই শিপড: ${totalShippedForStyle.toLocaleString('en-US')})। যতটুকু প্যাক হয়নি ততটুকু শিপমেন্ট/ফাইনাল ইন্সপেকশন করা যাবে না — এটার জন্য কোয়ালিটি বা প্রোডাকশন এডমিনের অনুমতি লাগবে।`,
+            `Only ${packedQty.toLocaleString('en-US')} pcs have been packed (already shipped: ${totalShippedForStyle.toLocaleString('en-US')}). You cannot ship/final-inspect more than what's packed — this needs Quality or Production admin override.`
+          )
+        );
+        return;
+      }
+      if (!override) {
+        setError(
+          t(
+            'প্যাক করা কোয়ান্টিটির চেয়ে বেশি — এগোতে চাইলে নিচে "প্যাকিং সম্পূর্ণ না হলেও এগিয়ে যান" টিক দিন এবং কারণ লিখুন।',
+            'This exceeds what has been packed — to proceed, check "Proceed even though packing isn\'t complete" below and give a reason.'
+          )
+        );
+        return;
+      }
+      if (!overrideReason.trim()) {
+        setError(t('ওভাররাইডের কারণ লিখুন।', 'Enter a reason for the override.'));
+        return;
+      }
+    }
     setBusy(true);
     try {
-      await addDoc(collection(db, 'styles', styleId, 'shipments'), {
+      const payload = {
         styleNo: style?.styleNo || '',
         styleName: style?.styleName || '',
         buyer: style?.buyer || '',
@@ -137,8 +171,16 @@ export default function ShipmentTracking() {
         notes: form.notes || '',
         enteredBy: profile?.name || user?.email,
         createdAt: serverTimestamp(),
-      });
+      };
+      if (qty > availableToShip && override) {
+        payload.packingOverride = true;
+        payload.overrideReason = overrideReason.trim();
+        payload.overrideBy = profile?.name || user?.email;
+      }
+      await addDoc(collection(db, 'styles', styleId, 'shipments'), payload);
       setForm({ poNo: '', colour: '', shippedQty: '', finalInspectionDate: today(), result: 'pass', shipDate: today(), notes: '' });
+      setOverride(false);
+      setOverrideReason('');
     } catch (err) {
       setError(t('সেভ করা যায়নি, আবার চেষ্টা করুন।', 'Could not save, please try again.'));
     } finally {
@@ -159,6 +201,7 @@ export default function ShipmentTracking() {
     { key: 'shippedQty', label: t('শিপড কোয়ান্টিটি', 'Shipped Qty') },
     { key: 'finalInspectionDate', label: t('ফাইনাল ইন্সপেকশন তারিখ', 'Final Inspection Date') },
     { key: 'result', label: t('ফলাফল', 'Result'), render: (r) => resultLabel(r.result, t) },
+    { key: 'packingOverride', label: t('প্যাকিং ওভাররাইড', 'Packing Override'), render: (r) => (r.packingOverride ? `${t('হ্যাঁ', 'Yes')} — ${r.overrideReason || ''}` : '') },
     { key: 'notes', label: t('নোট', 'Notes') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
@@ -172,6 +215,7 @@ export default function ShipmentTracking() {
     { key: 'finalInspectionDate', label: t('ফাইনাল ইন্সপেকশন তারিখ', 'Final Inspection Date') },
     { key: 'result', label: t('ফলাফল', 'Result'), render: (r) => resultLabel(r.result, t) },
     { key: 'shipDate', label: t('শিপমেন্ট তারিখ', 'Ship Date') },
+    { key: 'packingOverride', label: t('প্যাকিং ওভাররাইড', 'Packing Override'), render: (r) => (r.packingOverride ? t('হ্যাঁ', 'Yes') : '') },
   ];
 
   return (
@@ -204,10 +248,21 @@ export default function ShipmentTracking() {
               </span>
               <span className="text-ink-soft">
                 {t('অর্ডার', 'Order')}: {Number(style.orderQty || 0).toLocaleString('en-US')} ·{' '}
+                {t('প্যাক হয়েছে', 'Packed')}: {packedQty.toLocaleString('en-US')} ·{' '}
                 {t('শিপড', 'Shipped')}: {totalShippedForStyle.toLocaleString('en-US')} ·{' '}
                 {t('বাকি', 'Remaining')}: {remainingForStyle.toLocaleString('en-US')}
               </span>
             </div>
+
+            {packedQty <= 0 && (
+              <div className="flex items-center gap-2 rounded-md border border-amber/30 bg-amber-soft px-3 py-2 text-xs text-amber">
+                <Lock size={14} />
+                {t(
+                  'এই স্টাইলে এখনো কোনো প্যাকিং এন্ট্রি হয়নি — সাধারণত প্যাকিং শুরু না হলে শিপমেন্ট/ফাইনাল ইন্সপেকশন করা যাবে না।',
+                  'No packing entries yet for this style — normally shipment/final inspection cannot be logged before packing starts.'
+                )}
+              </div>
+            )}
 
             {canEnter && (
               <form onSubmit={handleSubmit} className="space-y-4 rounded-md border border-line bg-paper/50 p-4">
@@ -283,8 +338,43 @@ export default function ShipmentTracking() {
                 <Field label={t('নোট (ঐচ্ছিক)', 'Notes (optional)')}>
                   <input value={form.notes} onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))} className={inputClass} />
                 </Field>
+
+                {qtyExceedsPacked && Number(form.shippedQty) > 0 && (
+                  <div className="rounded-md border border-red/30 bg-red-soft/40 p-3 text-xs">
+                    <p className="text-red">
+                      {t(
+                        `প্যাক আছে ${Math.max(packedQty, 0).toLocaleString('en-US')} পিস, শিপড ${totalShippedForStyle.toLocaleString('en-US')} পিস — এর বেশি (${availableToShip.toLocaleString('en-US')} পিসের বেশি) শিপমেন্ট এন্ট্রি দিতে পারবেন না।`,
+                        `Packed: ${Math.max(packedQty, 0).toLocaleString('en-US')} pcs, already shipped: ${totalShippedForStyle.toLocaleString('en-US')} pcs — you can't log more than ${availableToShip.toLocaleString('en-US')} pcs more.`
+                      )}
+                    </p>
+                    {canOverride ? (
+                      <div className="mt-2 space-y-2">
+                        <label className="flex items-center gap-2 text-ink">
+                          <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+                          {t('প্যাকিং সম্পূর্ণ না হলেও এগিয়ে যান (এডমিন ওভাররাইড)', "Proceed even though packing isn't complete (admin override)")}
+                        </label>
+                        {override && (
+                          <input
+                            className={inputClass}
+                            placeholder={t('ওভাররাইডের কারণ লিখুন *', 'Reason for override *')}
+                            value={overrideReason}
+                            onChange={(e) => setOverrideReason(e.target.value)}
+                          />
+                        )}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-ink-soft">
+                        {t('শুধুমাত্র কোয়ালিটি/প্রোডাকশন এডমিন এই সীমা ওভাররাইড করতে পারবেন।', 'Only a Quality/Production admin can override this limit.')}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {error && <p className="text-sm text-red">{error}</p>}
-                <button type="submit" disabled={busy} className={btnPrimary}>
+                <button
+                  type="submit"
+                  disabled={busy || (qtyExceedsPacked && Number(form.shippedQty) > 0 && !canOverride)}
+                  className={btnPrimary}
+                >
                   {busy ? t('সেভ হচ্ছে…', 'Saving…') : t('শিপমেন্ট এন্ট্রি সেভ করুন', 'Save Shipment Entry')}
                 </button>
               </form>

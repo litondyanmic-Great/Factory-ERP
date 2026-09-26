@@ -4,7 +4,7 @@ import { Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { Pill, EmptyState, inputClass, btnSecondary } from '../../components/ui';
-import { ALL_SECTIONS, ADMIN_AREAS } from '../../lib/constants';
+import { ALL_SECTIONS, ADMIN_AREAS, isYarnOverageApprover } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 export default function UsersAdmin() {
@@ -58,6 +58,10 @@ export default function UsersAdmin() {
       ? current.filter((a) => a !== areaKey)
       : [...current, areaKey];
     await updateDoc(doc(db, 'users', u.id), { adminAreas: next });
+  }
+
+  async function toggleYarnApprover(u) {
+    await updateDoc(doc(db, 'users', u.id), { canApproveYarnOverage: !u.canApproveYarnOverage });
   }
 
   async function handleDelete(u) {
@@ -211,6 +215,31 @@ export default function UsersAdmin() {
                               );
                             })}
                           </div>
+                        </div>
+
+                        <div className="mt-4">
+                          <p className="mb-2 text-xs font-medium text-ink-soft">
+                            {t(
+                              'ইয়ার্ন ইস্যু অনুমোদনকারী (হায়ার অথরিটি): টিক দিলে এই ইউজার স্ট্যান্ডার্ড কনজাম্পশন + ১০%-এর বেশি ইয়ার্ন ইস্যু রিকোয়েস্ট অনুমোদন/বাতিল করতে পারবে (যেমন Admin, PD, MD, DGM)।',
+                              'Yarn issue approver (Higher Authority): if checked, this user can approve/reject yarn issue requests that exceed standard consumption + 10% (e.g. Admin, PD, MD, DGM).'
+                            )}
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => toggleYarnApprover(u)}
+                            className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
+                              isYarnOverageApprover(u) && u.role !== 'admin'
+                                ? 'border-indigo bg-indigo text-white'
+                                : 'border-line bg-surface text-ink-soft hover:bg-paper'
+                            }`}
+                            disabled={u.role === 'admin'}
+                          >
+                            {u.role === 'admin'
+                              ? t('অ্যাডমিন সবসময় অনুমোদন করতে পারে', 'Admin can always approve')
+                              : u.canApproveYarnOverage
+                              ? t('✓ অনুমোদনকারী হিসেবে সেট করা আছে', '✓ Set as approver')
+                              : t('অনুমোদনকারী হিসেবে সেট করুন', 'Set as approver')}
+                          </button>
                         </div>
                       </td>
                     </tr>

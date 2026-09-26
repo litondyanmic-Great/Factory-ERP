@@ -98,7 +98,8 @@ export default function Reports() {
       STAGES.forEach((st, i) => {
         const periodQty = rangeByStyleStage.get(`${s.id}__${st.key}`) || 0;
         const cumulative = s.stages?.[st.key] || 0;
-        const prevCumulative = i > 0 ? s.stages?.[STAGES[i - 1].key] || 0 : null;
+        const prevKey = i > 0 ? s.stagePrerequisites?.[st.key] || STAGES[i - 1].key : null;
+        const prevCumulative = i > 0 ? s.stages?.[prevKey] || 0 : null;
         const wip = i > 0 ? Math.max(0, prevCumulative - cumulative) : null;
         const overQty = Math.max(0, cumulative - Number(s.orderQty || 0));
         const overPct = s.orderQty > 0 && overQty > 0 ? Math.round((overQty / s.orderQty) * 100) : 0;

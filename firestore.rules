@@ -50,6 +50,14 @@ service cloud.firestore {
       return isAdmin() || (isActive() && ('adminAreas' in myProfile()) && area in myProfile().adminAreas);
     }
 
+    // True if I'm admin, OR I was specifically flagged as a "Higher
+    // Authority" yarn-issue approver (Admin/PD/MD/DGM) via
+    // users/{uid}.canApproveYarnOverage — mirrors isYarnOverageApprover()
+    // in lib/constants.js.
+    function isYarnApprover() {
+      return isAdmin() || (isActive() && myProfile().canApproveYarnOverage == true);
+    }
+
     // --- Collection-group access -------------------------------------
     // Firestore requires a SEPARATE rule (beyond the nested subcollection
     // rule above) to permit collectionGroup() queries that read across
@@ -67,6 +75,12 @@ service cloud.firestore {
     }
     match /{path=**}/shipments/{shipmentId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+    }
+    match /{path=**}/yarnIssueApprovals/{reqId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+    }
+    match /{path=**}/ieRecords/{recordId} {
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'ie']);
     }
 
     // system/meta — a single doc used only to decide whether the very next
@@ -156,6 +170,8 @@ service cloud.firestore {
                 || canEnterSection('yarnStore'))
           : (request.resource.data.type == 'returnToSupplier')
             ? (hasRole(['admin', 'store']) || canEnterSection('yarnStore'))
+          : (request.resource.data.get('approvedOverage', false) == true)
+            ? isYarnApprover()
           : (hasRole(['admin', 'store'])
               || canEnterSection('yarnStore')
               || canEnterSection('winding')
@@ -186,9 +202,26 @@ service cloud.firestore {
         allow create, update: if hasRole(['admin', 'gpq']) || hasAdminArea('quality') || hasAdminArea('production');
         allow delete: if isAdmin();
       }
+      // Yarn-issue-over-buffer approval requests: filed when someone tries
+      // to issue yarn to Knitting beyond standard consumption (order qty /
+      // 12 x contact weight) + 10% buffer. Only a "Higher Authority"
+      // approver (Admin/PD/MD/DGM, see isYarnApprover()) may approve/reject
+      // — the matching yarnLedger entry is only ever created after that.
+      match /yarnIssueApprovals/{reqId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
+        allow update: if isYarnApprover();
+        allow delete: if isAdmin();
+      }
+      // IE (Industrial Engineering) SMV/target + actual-efficiency records,
+      // one per style/stage/date. IE themselves (or a production-area
+      // admin) can log/correct; broad read for reporting.
+      match /ieRecords/{recordId} {
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'ie']);
+        allow create, update: if hasRole(['admin', 'ie']) || hasAdminArea('production');
+        allow delete: if hasAdminArea('production') || isAdmin();
+      }
     }
-
-    // inventoryItems/{itemId} — yarn & accessories.
     match /inventoryItems/{itemId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
       allow create, update: if hasRole(['admin', 'store']);

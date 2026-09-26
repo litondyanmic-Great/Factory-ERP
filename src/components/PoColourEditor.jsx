@@ -88,7 +88,7 @@ export default function PoColourEditor({ pos, onChange }) {
               <label className="block flex-1">
                 <span className="mb-1 block text-xs font-medium text-ink-soft">{t('PO নম্বর', 'PO No.')}</span>
                 <input
-                  className={inputClass}
+                  className={`${inputClass} text-base text-ink sm:text-sm`}
                   value={po.poNo}
                   onChange={(e) => updatePo(poIdx, { poNo: e.target.value })}
                   placeholder={t('যেমন: PO-1001', 'e.g. PO-1001')}
@@ -109,9 +109,11 @@ export default function PoColourEditor({ pos, onChange }) {
             <div className="mt-3 space-y-2">
               <span className="block text-xs font-medium text-ink-soft">{t('কালার অনুযায়ী কোয়ান্টিটি', 'Colour-wise Quantity')}</span>
               {po.colours.map((c, colIdx) => (
-                <div key={colIdx} className="flex items-center gap-2">
+                <div key={colIdx} className="grid grid-cols-[1fr_7rem_auto] items-center gap-2">
                   <input
-                    className={`${inputClass} flex-1`}
+                    type="text"
+                    autoComplete="off"
+                    className={`${inputClass} min-w-0 text-base text-ink sm:text-sm`}
                     placeholder={t('কালার (যেমন: Red)', 'Colour (e.g. Red)')}
                     value={c.colour}
                     onChange={(e) => updateColour(poIdx, colIdx, { colour: e.target.value })}
@@ -119,12 +121,13 @@ export default function PoColourEditor({ pos, onChange }) {
                   <input
                     type="number"
                     min="0"
-                    className={`${inputClass} w-28`}
+                    autoComplete="off"
+                    className={`${inputClass} min-w-0 text-base text-ink sm:text-sm`}
                     placeholder={t('কোয়ান্টিটি', 'Qty')}
                     value={c.qty}
                     onChange={(e) => updateColour(poIdx, colIdx, { qty: e.target.value })}
                   />
-                  {po.colours.length > 1 && (
+                  {po.colours.length > 1 ? (
                     <button
                       type="button"
                       onClick={() => removeColour(poIdx, colIdx)}
@@ -133,6 +136,8 @@ export default function PoColourEditor({ pos, onChange }) {
                     >
                       <Trash2 size={14} />
                     </button>
+                  ) : (
+                    <span className="w-[30px]" />
                   )}
                 </div>
               ))}

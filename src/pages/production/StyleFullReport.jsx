@@ -86,7 +86,8 @@ export default function StyleFullReport() {
     if (!style) return [];
     return STAGES.map((s, i) => {
       const done = style.stages?.[s.key] || 0;
-      const prevDone = i > 0 ? style.stages?.[STAGES[i - 1].key] || 0 : done;
+      const prevKey = i > 0 ? style.stagePrerequisites?.[s.key] || STAGES[i - 1].key : null;
+      const prevDone = i > 0 ? style.stages?.[prevKey] || 0 : done;
       const wip = i > 0 ? Math.max(0, prevDone - done) : 0;
       const overQty = Math.max(0, done - Number(style.orderQty || 0));
       const overPct = style.orderQty > 0 ? Math.round((overQty / style.orderQty) * 100) : 0;

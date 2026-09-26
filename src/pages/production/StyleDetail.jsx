@@ -64,13 +64,25 @@ export default function StyleDetail() {
   const [entryDate, setEntryDate] = useState(new Date().toISOString().slice(0, 10));
   const [qty, setQty] = useState('');
   const [note, setNote] = useState('');
-  const [yarnItemId, setYarnItemId] = useState('');
-  const [yarnQty, setYarnQty] = useState('');
+  // Knitting entries can consume more than one yarn at once (e.g. body yarn
+  // + a contrast/trim yarn together) — each row is independently validated
+  // against that yarn's own "ready for knitting" balance for this style.
+  const [yarnRows, setYarnRows] = useState([{ yarnItemId: '', yarnQty: '' }]);
   const [entryPoNo, setEntryPoNo] = useState('');
   const [entryColour, setEntryColour] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [editingStyle, setEditingStyle] = useState(false);
+
+  function updateYarnRow(idx, patch) {
+    setYarnRows((rows) => rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  }
+  function addYarnRow() {
+    setYarnRows((rows) => [...rows, { yarnItemId: '', yarnQty: '' }]);
+  }
+  function removeYarnRow(idx) {
+    setYarnRows((rows) => rows.filter((_, i) => i !== idx));
+  }
 
   useEffect(() => {
     if (allowedStages.length && !stage) setStage(allowedStages[0].key);
@@ -117,6 +129,7 @@ export default function StyleDetail() {
     }
 
     const stageIndex = STAGES.findIndex((s) => s.key === stage);
+    let validYarnRows = [];
 
     if (stage === STAGES[0].key) {
       // Knitting is gated on yarn: the store must have issued/wound yarn
@@ -130,48 +143,50 @@ export default function StyleDetail() {
         );
         return;
       }
-      if (!yarnItemId) {
-        setError(t('কোন ইয়ার্নের বিপরীতে উৎপাদন হচ্ছে তা নির্বাচন করুন।', 'Select which yarn this production is against.'));
+      validYarnRows = yarnRows.filter((r) => r.yarnItemId && Number(r.yarnQty) > 0);
+      if (validYarnRows.length === 0) {
+        setError(t('কোন ইয়ার্নের বিপরীতে উৎপাদন হচ্ছে তা নির্বাচন করে খরচ (lb) দিন।', 'Select at least one yarn used and enter its quantity (lb).'));
         return;
       }
-      const bal = yarnReadyBalances.find((b) => b.yarnItemId === yarnItemId);
-      const ready = bal?.ready || 0;
-      const usedNow = Number(yarnQty || 0);
-      if (!usedNow || usedNow <= 0) {
-        setError(t('ইয়ার্ন খরচ (lb) দিন।', 'Enter yarn used (lb).'));
-        return;
-      }
-      if (usedNow > ready + 0.001) {
-        setError(
-          t(
-            `এই ইয়ার্নের জন্য শুধু ${ready.toFixed(2)} lb প্রস্তুত আছে, এর বেশি খরচ দেখানো যাবে না।`,
-            `Only ${ready.toFixed(2)} lb of this yarn is ready — cannot log more than that as used.`
-          )
-        );
-        return;
+      // Two rows using the same yarn must be checked together against that
+      // yarn's balance, not one at a time.
+      const usedByYarn = new Map();
+      validYarnRows.forEach((r) => usedByYarn.set(r.yarnItemId, (usedByYarn.get(r.yarnItemId) || 0) + Number(r.yarnQty)));
+      for (const [yid, usedNow] of usedByYarn.entries()) {
+        const bal = yarnReadyBalances.find((b) => b.yarnItemId === yid);
+        const ready = bal?.ready || 0;
+        if (usedNow > ready + 0.001) {
+          setError(
+            t(
+              `"${bal?.yarnItemName || ''}" ইয়ার্নের জন্য শুধু ${ready.toFixed(2)} lb প্রস্তুত আছে, এর বেশি খরচ দেখানো যাবে না।`,
+              `Only ${ready.toFixed(2)} lb of "${bal?.yarnItemName || ''}" is ready — cannot log more than that as used.`
+            )
+          );
+          return;
+        }
       }
     } else if (stageIndex > 0) {
-      // Every later stage is capped by how much WIP the previous stage has
-      // actually produced (that stage's cumulative output minus what this
-      // stage has already consumed of it) — a stage can't "invent" pieces
-      // that were never sent forward from the one before it.
-      const prevKey = STAGES[stageIndex - 1].key;
+      // Every later stage is capped by how much WIP its prerequisite stage
+      // has actually produced (that stage's cumulative output minus what
+      // this stage has already consumed of it) — a stage can't "invent"
+      // pieces that were never sent forward from its prerequisite. By
+      // default the prerequisite is just "the stage before it" in STAGES,
+      // but a style can override this per stage (Edit Style > Customize
+      // Stage Order) for cases where the real factory flow differs, e.g.
+      // Attachment needing to run before Sewing for a particular style.
+      const prevKey = style.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
       const available = (style.stages?.[prevKey] || 0) - (style.stages?.[stage] || 0);
       if (n > available + 0.0001) {
         setError(
           t(
-            `${stageLabel(STAGES[stageIndex - 1].key, 'bn')} থেকে এখনো এই স্টেজে মাত্র ${available} পিস এসেছে (বাকি), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
-            `Only ${available} pcs is currently available from ${stageLabel(STAGES[stageIndex - 1].key, 'en')} — cannot log more than that here.`
+            `${stageLabel(prevKey, 'bn')} থেকে এখনো এই স্টেজে মাত্র ${available} পিস এসেছে (বাকি), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
+            `Only ${available} pcs is currently available from ${stageLabel(prevKey, 'en')} — cannot log more than that here.`
           )
         );
         return;
       }
     }
 
-    if (stage === 'knitting' && yarnItemId && !yarnQty) {
-      setError(t('ইয়ার্ন কোয়ান্টিটি দিন অথবা ইয়ার্ন সিলেকশন খালি রাখুন।', 'Enter yarn quantity or clear the yarn selection.'));
-      return;
-    }
     setBusy(true);
     try {
       const entryData = {
@@ -184,10 +199,19 @@ export default function StyleDetail() {
       };
       if (entryPoNo) entryData.poNo = entryPoNo;
       if (entryColour) entryData.colour = entryColour;
-      if (stage === 'knitting' && yarnItemId) {
-        entryData.yarnItemId = yarnItemId;
-        entryData.yarnItemName = yarnItems.find((y) => y.id === yarnItemId)?.name || '';
-        entryData.yarnQty = Number(yarnQty);
+      if (stage === 'knitting' && validYarnRows.length > 0) {
+        const usages = validYarnRows.map((r) => ({
+          yarnItemId: r.yarnItemId,
+          yarnItemName: yarnItems.find((y) => y.id === r.yarnItemId)?.name || '',
+          yarnQty: Number(r.yarnQty),
+        }));
+        entryData.yarnUsages = usages;
+        // Kept for backward compatibility with older screens/reports that
+        // only ever knew a single yarn per entry — always mirrors the
+        // first row.
+        entryData.yarnItemId = usages[0].yarnItemId;
+        entryData.yarnItemName = usages[0].yarnItemName;
+        entryData.yarnQty = usages[0].yarnQty;
       }
       const entryRef = await addDoc(collection(db, 'styles', id, 'productionEntries'), entryData);
       const styleUpdate = { [`stages.${stage}`]: increment(n) };
@@ -198,32 +222,35 @@ export default function StyleDetail() {
       // already running (see Dashboard) and are left untouched here.
       if (style?.productionStarted === false) styleUpdate.productionStarted = true;
       await updateDoc(doc(db, 'styles', id), styleUpdate);
-      if (entryData.yarnItemId) {
-        await updateDoc(doc(db, 'inventoryItems', entryData.yarnItemId), {
-          currentStock: increment(-entryData.yarnQty),
-        });
-        // Also record it on this style's yarn ledger, so the "ready for
-        // knitting" balance on the Style Yarn Tracking page stays accurate.
-        // Keep a back-reference on the production entry so deleting it can
-        // clean up the matching ledger row too.
-        const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
-          type: 'consumption',
-          yarnItemId: entryData.yarnItemId,
-          yarnItemName: entryData.yarnItemName,
-          styleNo: style?.styleNo || '',
-          styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
-          qty: entryData.yarnQty,
-          date: entryDate,
-          notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
-          enteredBy: profile?.name || user?.email,
-          createdAt: serverTimestamp(),
-        });
-        await updateDoc(entryRef, { yarnLedgerId: ledgerRef.id });
+      if (entryData.yarnUsages?.length > 0) {
+        const ledgerIds = [];
+        for (const usage of entryData.yarnUsages) {
+          await updateDoc(doc(db, 'inventoryItems', usage.yarnItemId), {
+            currentStock: increment(-usage.yarnQty),
+          });
+          // Also record it on this style's yarn ledger, so the "ready for
+          // knitting" balance on the Style Yarn Tracking page stays
+          // accurate. Keep back-references on the production entry so
+          // deleting it can clean up every matching ledger row too.
+          const ledgerRef = await addDoc(collection(db, 'styles', id, 'yarnLedger'), {
+            type: 'consumption',
+            yarnItemId: usage.yarnItemId,
+            yarnItemName: usage.yarnItemName,
+            styleNo: style?.styleNo || '',
+            styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
+            qty: usage.yarnQty,
+            date: entryDate,
+            notes: t('নিটিং প্রোডাকশন এন্ট্রি থেকে', 'From knitting production entry'),
+            enteredBy: profile?.name || user?.email,
+            createdAt: serverTimestamp(),
+          });
+          ledgerIds.push(ledgerRef.id);
+        }
+        await updateDoc(entryRef, { yarnLedgerIds: ledgerIds, yarnLedgerId: ledgerIds[0] });
       }
       setQty('');
       setNote('');
-      setYarnItemId('');
-      setYarnQty('');
+      setYarnRows([{ yarnItemId: '', yarnQty: '' }]);
       setEntryPoNo('');
       setEntryColour('');
     } catch (err) {
@@ -237,11 +264,12 @@ export default function StyleDetail() {
     const ok = window.confirm(t('এই এন্ট্রিটি মুছে ফেলতে চান?', 'Delete this entry?'));
     if (!ok) return;
     await updateDoc(doc(db, 'styles', id), { [`stages.${entry.stage}`]: increment(-entry.quantity) });
-    if (entry.yarnItemId && entry.yarnLedgerId) {
+    const ledgerIds = entry.yarnLedgerIds?.length > 0 ? entry.yarnLedgerIds : entry.yarnLedgerId ? [entry.yarnLedgerId] : [];
+    for (const lid of ledgerIds) {
       // Deleting the matching yarn-consumption ledger entry is enough —
       // every yarn balance (store/block/winding/ready-for-knitting) is
       // computed live from this ledger, so nothing else needs touching.
-      await deleteDoc(doc(db, 'styles', id, 'yarnLedger', entry.yarnLedgerId));
+      await deleteDoc(doc(db, 'styles', id, 'yarnLedger', lid));
     }
     await deleteDoc(doc(db, 'styles', id, 'productionEntries', entry.id));
   }
@@ -263,7 +291,7 @@ export default function StyleDetail() {
     if (!ok) return;
     setBusy(true);
     try {
-      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger', 'shipments'];
+      const subcollections = ['productionEntries', 'yarnLedger', 'accessoryLedger', 'shipments', 'yarnIssueApprovals', 'ieRecords'];
       for (const sub of subcollections) {
         const snap = await getDocs(collection(db, 'styles', id, sub));
         const docs = snap.docs;
@@ -288,13 +316,15 @@ export default function StyleDetail() {
 
   const canEditStyle = can(profile?.role, 'style:edit');
 
-  // Yarn consumption report (per yarn item) for this style's knitting entries.
+  // Yarn consumption report (per yarn item) for this style's knitting
+  // entries — flattens both old-format (single yarnItemId/yarnQty) and
+  // new-format (yarnUsages array, for entries that used more than one
+  // yarn at once) entries into one per-yarn total.
   const yarnConsumption = (entries || [])
-    .filter((e) => e.yarnItemId)
-    .reduce((acc, e) => {
-      const k = e.yarnItemId;
-      acc[k] = acc[k] || { name: e.yarnItemName, qty: 0 };
-      acc[k].qty += Number(e.yarnQty || 0);
+    .flatMap((e) => (e.yarnUsages?.length > 0 ? e.yarnUsages : e.yarnItemId ? [{ yarnItemId: e.yarnItemId, yarnItemName: e.yarnItemName, yarnQty: e.yarnQty }] : []))
+    .reduce((acc, u) => {
+      acc[u.yarnItemId] = acc[u.yarnItemId] || { name: u.yarnItemName, qty: 0 };
+      acc[u.yarnItemId].qty += Number(u.yarnQty || 0);
       return acc;
     }, {});
   const yarnConsumptionRows = Object.values(yarnConsumption);
@@ -305,8 +335,8 @@ export default function StyleDetail() {
     { key: 'poNo', label: t('PO', 'PO') },
     { key: 'colour', label: t('কালার', 'Colour') },
     { key: 'quantity', label: t('কোয়ান্টিটি', 'Quantity') },
-    { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn') },
-    { key: 'yarnQty', label: t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)') },
+    { key: 'yarnItemName', label: t('ইয়ার্ন', 'Yarn'), render: (r) => (r.yarnUsages?.length > 0 ? r.yarnUsages.map((u) => u.yarnItemName).join(', ') : r.yarnItemName || '') },
+    { key: 'yarnQty', label: t('ইয়ার্ন খরচ (lb)', 'Yarn Used (lb)'), render: (r) => (r.yarnUsages?.length > 0 ? r.yarnUsages.map((u) => `${u.yarnItemName}: ${u.yarnQty}lb`).join(', ') : r.yarnQty || '') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
 
@@ -437,12 +467,20 @@ export default function StyleDetail() {
             const pct = style.orderQty > 0 ? Math.min(100, Math.round((done / style.orderQty) * 100)) : 0;
             const overQty = done - Number(style.orderQty || 0);
             const overPct = style.orderQty > 0 && overQty > 0 ? Math.round((overQty / style.orderQty) * 100) : 0;
-            const prevDone = i > 0 ? style.stages?.[STAGES[i - 1].key] || 0 : null;
+            const prevKey = i > 0 ? style.stagePrerequisites?.[s.key] || STAGES[i - 1].key : null;
+            const prevDone = i > 0 ? style.stages?.[prevKey] || 0 : null;
             const wip = i > 0 ? Math.max(0, prevDone - done) : null;
             return (
               <div key={s.key}>
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 text-sm">
-                  <span className="text-ink">{lang === 'en' ? s.labelEn : s.label}</span>
+                  <span className="text-ink">
+                    {lang === 'en' ? s.labelEn : s.label}
+                    {i > 0 && prevKey !== STAGES[i - 1].key && (
+                      <span className="ml-1.5 rounded-full bg-indigo-soft px-1.5 py-0.5 text-[10px] font-medium text-indigo">
+                        {t('কাস্টম অর্ডার', 'custom order')}: {stageLabel(prevKey, lang)} →
+                      </span>
+                    )}
+                  </span>
                   <span className="flex items-center gap-2 text-ink-soft">
                     {i > 0 && wip > 0 && (
                       <span className="rounded-full bg-amber-soft px-2 py-0.5 text-xs font-medium text-amber">
@@ -589,9 +627,9 @@ export default function StyleDetail() {
               )}
 
               {stage === 'knitting' && (
-                <div className="grid gap-4 rounded-md border border-line bg-paper/50 p-3 sm:grid-cols-2">
+                <div className="space-y-3 rounded-md border border-line bg-paper/50 p-3">
                   {totalYarnReady <= 0 ? (
-                    <p className="sm:col-span-2 text-sm text-red">
+                    <p className="text-sm text-red">
                       {t(
                         'এই স্টাইলের জন্য এখনো কোনো ইয়ার্ন প্রস্তুত নেই — আগে ইয়ার্ন স্টোর থেকে ইস্যু করতে হবে।',
                         'No yarn is ready for this style yet — the Yarn Store must issue yarn first.'
@@ -599,27 +637,47 @@ export default function StyleDetail() {
                     </p>
                   ) : (
                     <>
-                      <Field label={t('কোন ইয়ার্নের বিপরীতে *', 'Against which yarn *')}>
-                        <select value={yarnItemId} onChange={(e) => setYarnItemId(e.target.value)} className={inputClass}>
-                          <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                          {yarnReadyBalances.map((b) => (
-                            <option key={b.yarnItemId} value={b.yarnItemId}>
-                              {b.yarnItemName} ({b.ready.toFixed(2)} lb {t('প্রস্তুত', 'ready')})
-                            </option>
-                          ))}
-                        </select>
-                      </Field>
-                      <Field label={t('ইয়ার্ন খরচ (lb) *', 'Yarn Used (lb) *')}>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={yarnQty}
-                          onChange={(e) => setYarnQty(e.target.value)}
-                          className={inputClass}
-                          disabled={!yarnItemId}
-                        />
-                      </Field>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-ink">{t('ইয়ার্ন খরচ (একাধিক ইয়ার্ন হতে পারে)', 'Yarn Used (can be more than one)')}</span>
+                        <button type="button" onClick={addYarnRow} className={`${btnSecondary} !px-2.5 !py-1 text-xs`}>
+                          {t('আরেকটি ইয়ার্ন যোগ করুন', 'Add another yarn')}
+                        </button>
+                      </div>
+                      {yarnRows.map((row, i) => (
+                        <div key={i} className="grid gap-3 sm:grid-cols-[1fr_auto_auto] sm:items-end">
+                          <Field label={t('কোন ইয়ার্নের বিপরীতে *', 'Against which yarn *')}>
+                            <select value={row.yarnItemId} onChange={(e) => updateYarnRow(i, { yarnItemId: e.target.value })} className={inputClass}>
+                              <option value="">{t('নির্বাচন করুন', 'Select')}</option>
+                              {yarnReadyBalances.map((b) => (
+                                <option key={b.yarnItemId} value={b.yarnItemId}>
+                                  {b.yarnItemName} ({b.ready.toFixed(2)} lb {t('প্রস্তুত', 'ready')})
+                                </option>
+                              ))}
+                            </select>
+                          </Field>
+                          <Field label={t('খরচ (lb) *', 'Used (lb) *')}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.yarnQty}
+                              onChange={(e) => updateYarnRow(i, { yarnQty: e.target.value })}
+                              className={`${inputClass} sm:w-32`}
+                              disabled={!row.yarnItemId}
+                            />
+                          </Field>
+                          {yarnRows.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => removeYarnRow(i)}
+                              className="mb-0.5 rounded-md border border-red/30 bg-red-soft p-2 text-red hover:bg-red/10"
+                              title={t('মুছুন', 'Remove')}
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
+                      ))}
                     </>
                   )}
                 </div>
@@ -714,10 +772,16 @@ export default function StyleDetail() {
                     </td>
                     <td className="py-2 pr-4 text-ink-soft">
                       {e.quantity}
-                      {e.yarnItemName && (
+                      {e.yarnUsages?.length > 0 ? (
                         <span className="ml-1 text-xs text-ink-soft">
-                          ({e.yarnItemName}: {e.yarnQty}lb)
+                          ({e.yarnUsages.map((u) => `${u.yarnItemName}: ${u.yarnQty}lb`).join(', ')})
                         </span>
+                      ) : (
+                        e.yarnItemName && (
+                          <span className="ml-1 text-xs text-ink-soft">
+                            ({e.yarnItemName}: {e.yarnQty}lb)
+                          </span>
+                        )
                       )}
                     </td>
                     <td className="py-2 pr-4 text-ink-soft">{e.enteredBy}</td>
@@ -761,6 +825,16 @@ function EditStyleModal({ style, onClose }) {
     notes: style.notes || '',
   });
   const [imageDataUrl, setImageDataUrl] = useState(style.imageUrl || '');
+  // Per-style stage sequence override: normally each stage's prerequisite
+  // is just "the stage before it" in STAGES. Some styles need a different
+  // real-world flow (e.g. attachment must run before sewing rather than
+  // after) — this map lets that be set per style without touching the
+  // global pipeline. Only stages after the first (knitting, which is
+  // yarn-gated, not stage-gated) have a prerequisite at all.
+  const [stagePrereq, setStagePrereq] = useState({ ...(style.stagePrerequisites || {}) });
+  const [showStageOrder, setShowStageOrder] = useState(
+    Object.keys(style.stagePrerequisites || {}).length > 0
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -824,6 +898,7 @@ function EditStyleModal({ style, onClose }) {
         yarnComposition: form.yarnComposition || '',
         notes: form.notes || '',
         imageUrl: imageDataUrl || '',
+        stagePrerequisites: stagePrereq,
         ...payload,
       });
       onClose();
@@ -895,6 +970,53 @@ function EditStyleModal({ style, onClose }) {
         </div>
 
         {isNewFormat && <PoColourEditor pos={pos} onChange={setPos} />}
+
+        <div className="rounded-md border border-line bg-paper/50 p-3">
+          <button
+            type="button"
+            onClick={() => setShowStageOrder((v) => !v)}
+            className="flex w-full items-center justify-between text-sm font-medium text-ink"
+          >
+            <span>{t('স্টেজ অর্ডার কাস্টমাইজ করুন (ঐচ্ছিক)', 'Customize Stage Order (optional)')}</span>
+            <span className="text-xs text-indigo">{showStageOrder ? t('লুকান', 'Hide') : t('দেখান', 'Show')}</span>
+          </button>
+          <p className="mt-1 text-xs text-ink-soft">
+            {t(
+              'সাধারণত প্রতিটা স্টেজ তার আগের স্টেজের উপর নির্ভর করে (নিটিং → লিংকিং → ট্রিমিং …)। কোনো বিশেষ কারণে এই স্টাইলে যদি ক্রম আলাদা হয় (যেমন অ্যাটাচমেন্ট আগে করতে হবে), এখানে সেই স্টেজের জন্য আসল পূর্বশর্ত স্টেজ বেছে নিন।',
+              'Normally each stage depends on the one right before it (Knitting → Linking → Trimming …). If this particular style needs a different order for some reason (e.g. Attachment must happen earlier), pick the real prerequisite stage for it here.'
+            )}
+          </p>
+          {showStageOrder && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {STAGES.slice(1).map((s, i) => {
+                const defaultPrereq = STAGES[STAGES.findIndex((x) => x.key === s.key) - 1].key;
+                return (
+                  <Field key={s.key} label={t(s.label, s.labelEn)}>
+                    <select
+                      className={inputClass}
+                      value={stagePrereq[s.key] || defaultPrereq}
+                      onChange={(e) =>
+                        setStagePrereq((m) => {
+                          const val = e.target.value;
+                          const next = { ...m };
+                          if (val === defaultPrereq) delete next[s.key];
+                          else next[s.key] = val;
+                          return next;
+                        })
+                      }
+                    >
+                      {STAGES.filter((x) => x.key !== s.key).map((x) => (
+                        <option key={x.key} value={x.key}>
+                          {t(x.label, x.labelEn)} {x.key === defaultPrereq ? t('(ডিফল্ট)', '(default)') : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         <Field label={t('নোট', 'Notes')}>
           <textarea className={inputClass} rows={2} value={form.notes} onChange={(e) => update('notes', e.target.value)} />
