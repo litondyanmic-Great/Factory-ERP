@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
   collectionGroup,
   deleteDoc,
@@ -12,14 +14,22 @@ import {
   updateDoc,
   where,
 } from 'firebase/firestore';
-import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2, ShieldAlert, Check, X } from 'lucide-react';
+import { Trash2, Pencil, Truck, Send, ArrowRightLeft, Undo2, ShieldAlert, Check, X, Link2, Plus } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
+import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal, InspectionBadge } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { BLOCKS, STAGES, can, hasAreaAdmin, isYarnOverageApprover } from '../../lib/constants';
+import {
+  BLOCKS,
+  STAGES,
+  can,
+  hasAreaAdmin,
+  isYarnOverageApprover,
+  suggestedInspectionQty,
+  INSPECTION_STATUS_LABELS,
+} from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 const LEDGER_LABELS = {
@@ -127,12 +137,17 @@ export default function StyleYarnTracking() {
           adjustIn: 0,
           adjustOut: 0,
           returned: 0,
+          pendingInspection: 0,
         });
       }
       const b = map.get(e.yarnItemId);
       const q = Number(e.qty || 0);
       if (e.type === 'dyeingOrder') b.ordered += q;
-      if (e.type === 'receipt') b.received += q;
+      if (e.type === 'receipt') {
+        const cleared = !e.inspectionStatus || e.inspectionStatus === 'passed' || e.inspectionStatus === 'approved';
+        if (cleared) b.received += q;
+        else b.pendingInspection += q;
+      }
       if (e.type === 'issueToWinding') b.issuedWinding += q;
       if (e.type === 'issueToKnitting') b.issuedKnitting += q;
       if (e.type === 'windingToKnitting') b.windingToKnitting += q;
@@ -183,7 +198,17 @@ export default function StyleYarnTracking() {
       .filter((e) => e.yarnItemId === yarnItemId)
       .forEach((e) => {
         const q = Number(e.qty || 0);
-        if ((e.type === 'receipt' || e.type === 'blockAdjustIn') && e.block) {
+        // A receipt only becomes issuable stock once QC has passed it (or
+        // a Quality Manager/Higher Authority approved it despite a
+        // flagged issue) — 'pending' and 'hold' contribute nothing here.
+        // Receipts from before this feature existed have no
+        // inspectionStatus at all, which is treated as already-cleared so
+        // old data/balances don't suddenly break.
+        const cleared = !e.inspectionStatus || e.inspectionStatus === 'passed' || e.inspectionStatus === 'approved';
+        if (e.type === 'receipt' && e.block && cleared) {
+          map.set(e.block, (map.get(e.block) || 0) + q);
+        }
+        if (e.type === 'blockAdjustIn' && e.block) {
           map.set(e.block, (map.get(e.block) || 0) + q);
         }
         if ((e.type === 'issueToWinding' || e.type === 'issueToKnitting' || e.type === 'blockAdjustOut' || e.type === 'returnToSupplier') && e.block) {
@@ -195,7 +220,56 @@ export default function StyleYarnTracking() {
       .filter((b) => b.qty > 0.001);
   };
 
+  // How much of a receipt is still awaiting inspection or on hold, purely
+  // for visibility (shown as a banner + in the ledger table) — this isn't
+  // subtracted from any other total, it's informational.
+  const pendingInspectionFor = (yarnItemId) =>
+    (ledger || []).filter(
+      (e) => e.yarnItemId === yarnItemId && e.type === 'receipt' && (e.inspectionStatus === 'pending' || e.inspectionStatus === 'hold')
+    );
+
   const canManage = can(profile?.role, 'inventory:manage');
+
+  // Only the yarns actually linked to this style should show up in the
+  // Receive/Issue/Transfer/Return dropdowns — picking from the entire
+  // factory-wide yarn catalog every time is error-prone. If the style has
+  // no linked yarns configured yet (older styles), fall back to the full
+  // catalog so nothing breaks; once at least one yarn is linked, only
+  // linked yarns are offered.
+  const linkedYarnIds = Array.isArray(style?.yarnItemIds) ? style.yarnItemIds : [];
+  const styleYarnItems = linkedYarnIds.length > 0 ? yarnItems.filter((y) => linkedYarnIds.includes(y.id)) : yarnItems;
+  const [yarnPickerQuery, setYarnPickerQuery] = useState('');
+
+  async function linkYarnToStyle(yarnItemId) {
+    await updateDoc(doc(db, 'styles', styleId), { yarnItemIds: arrayUnion(yarnItemId) });
+    setYarnPickerQuery('');
+  }
+  async function unlinkYarnFromStyle(yarnItemId) {
+    await updateDoc(doc(db, 'styles', styleId), { yarnItemIds: arrayRemove(yarnItemId) });
+  }
+  // When the exact yarn name typed doesn't already exist in the factory's
+  // yarn catalog, create it (unit defaults to lb, the unit every yarn
+  // ledger entry here already uses) and link it to this style in one go —
+  // no need to leave this page to add a new yarn.
+  async function createAndLinkYarn(name) {
+    const clean = name.trim();
+    if (!clean) return;
+    const docRef = await addDoc(collection(db, 'inventoryItems'), {
+      name: clean,
+      type: 'yarn',
+      unit: 'lb',
+      createdBy: profile?.name || user?.email,
+      createdAt: serverTimestamp(),
+    });
+    await linkYarnToStyle(docRef.id);
+  }
+
+  const yarnPickerMatches = yarnPickerQuery.trim()
+    ? yarnItems.filter(
+        (y) => !linkedYarnIds.includes(y.id) && y.name.toLowerCase().includes(yarnPickerQuery.trim().toLowerCase())
+      )
+    : [];
+  const yarnPickerExactMatch = yarnItems.some((y) => y.name.trim().toLowerCase() === yarnPickerQuery.trim().toLowerCase());
 
   async function addLedgerEntry(type, data) {
     await addDoc(collection(db, 'styles', styleId, 'yarnLedger'), {
@@ -231,6 +305,11 @@ export default function StyleYarnTracking() {
       block: receiveForm.block,
       date: receiveForm.date,
       notes: receiveForm.notes || '',
+      // Every chalan starts life un-issuable until QC inspects a 10%
+      // sample and passes it — see blockBalancesFor(), which excludes
+      // anything not 'passed'/'approved' from issuable stock.
+      inspectionStatus: 'pending',
+      inspectionSuggestedQty: suggestedInspectionQty(n),
     });
     setReceiveForm({ yarnItemId: '', qty: '', chalanNo: '', block: '', date: today(), notes: '' });
   }
@@ -495,6 +574,11 @@ export default function StyleYarnTracking() {
     { key: 'block', label: t('ব্লক', 'Block') },
     { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
     { key: 'chalanNo', label: t('চালান নং', 'Chalan No.') },
+    {
+      key: 'inspectionStatus',
+      label: t('ইন্সপেকশন', 'Inspection'),
+      render: (r) => (r.type === 'receipt' ? t(INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.bn, INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.en) : ''),
+    },
     { key: 'notes', label: t('নোট/কারণ', 'Note/Reason') },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
@@ -504,7 +588,8 @@ export default function StyleYarnTracking() {
     { key: 'ordered', label: t('ডাইং অর্ডার (lb)', 'Dyeing Order (lb)') },
     { key: 'received', label: t('রিসিভড (lb)', 'Received (lb)') },
     { key: 'balanceToReceive', label: t('বাকি রিসিভ করতে হবে (lb)', 'Balance to Receive (lb)') },
-    { key: 'atStore', label: t('স্টোরে আছে (lb)', 'At Store (lb)') },
+    { key: 'atStore', label: t('স্টোরে আছে/ইস্যুযোগ্য (lb)', 'At Store/Issuable (lb)') },
+    { key: 'pendingInspection', label: t('ইন্সপেকশনের অপেক্ষায় (lb)', 'Awaiting Inspection (lb)') },
     { key: 'atWinding', label: t('ওয়াইন্ডিং-এ আছে (lb)', 'At Winding (lb)') },
     { key: 'readyForKnitting', label: t('নিটিং-এর জন্য প্রস্তুত (lb)', 'Ready for Knitting (lb)') },
     { key: 'returned', label: t('সাপ্লায়ারকে ফেরত (lb)', 'Returned to Supplier (lb)') },
@@ -575,6 +660,76 @@ export default function StyleYarnTracking() {
             <p className="text-xs text-ink-soft">{style.buyer} {style.poNo && `· PO: ${style.poNo}`}</p>
           </div>
 
+          {canManage && (
+            <div className="rounded-lg border border-line bg-surface p-5">
+              <h2 className="mb-1 font-display text-sm font-semibold text-ink">
+                {t('এই স্টাইলের ইয়ার্ন', "This Style's Yarns")}
+              </h2>
+              <p className="mb-3 text-xs text-ink-soft">
+                {t(
+                  'নিচে যে ইয়ার্নগুলো যোগ করবেন, শুধু সেগুলোই এই স্টাইলের রিসিভ/ইস্যু/ট্রান্সফার/রিটার্ন ফর্মে দেখাবে — পুরো ইয়ার্ন ক্যাটালগ থেকে ভুল ইয়ার্ন বেছে নেওয়ার ঝুঁকি থাকবে না।',
+                  "Only the yarns you add here will show up in this style's Receive/Issue/Transfer/Return dropdowns — no risk of picking the wrong yarn from the full factory catalog."
+                )}
+              </p>
+
+              {linkedYarnIds.length > 0 && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                  {styleYarnItems.map((y) => (
+                    <span key={y.id} className="inline-flex items-center gap-1.5 rounded-full border border-indigo/30 bg-indigo-soft px-3 py-1 text-xs font-medium text-indigo">
+                      {y.name}
+                      <button type="button" onClick={() => unlinkYarnFromStyle(y.id)} className="text-indigo hover:text-red" title={t('সরিয়ে দিন', 'Remove')}>
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              <div className="relative max-w-sm">
+                <input
+                  className={`${inputClass} text-base sm:text-sm`}
+                  placeholder={t('ইয়ার্নের নাম লিখুন…', 'Type a yarn name…')}
+                  value={yarnPickerQuery}
+                  onChange={(e) => setYarnPickerQuery(e.target.value)}
+                />
+                {yarnPickerQuery.trim() && (
+                  <div className="absolute z-10 mt-1 w-full space-y-1 rounded-md border border-line bg-surface p-1.5 shadow-md">
+                    {yarnPickerMatches.map((y) => (
+                      <button
+                        type="button"
+                        key={y.id}
+                        onClick={() => linkYarnToStyle(y.id)}
+                        className="block w-full rounded px-2 py-1.5 text-left text-sm text-ink hover:bg-paper"
+                      >
+                        {y.name} <span className="text-xs text-ink-soft">({t('বিদ্যমান ইয়ার্ন', 'existing yarn')})</span>
+                      </button>
+                    ))}
+                    {!yarnPickerExactMatch && (
+                      <button
+                        type="button"
+                        onClick={() => createAndLinkYarn(yarnPickerQuery)}
+                        className="block w-full rounded px-2 py-1.5 text-left text-sm font-medium text-indigo hover:bg-indigo-soft"
+                      >
+                        + {t(`নতুন ইয়ার্ন তৈরি করুন: "${yarnPickerQuery}"`, `Create new yarn: "${yarnPickerQuery}"`)}
+                      </button>
+                    )}
+                    {yarnPickerMatches.length === 0 && yarnPickerExactMatch && (
+                      <p className="px-2 py-1.5 text-xs text-ink-soft">{t('এই ইয়ার্ন ইতিমধ্যে যোগ করা আছে।', 'This yarn is already added.')}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+              {linkedYarnIds.length === 0 && (
+                <p className="mt-2 text-xs text-amber">
+                  {t(
+                    'এখনো কোনো ইয়ার্ন যোগ করা হয়নি — যতক্ষণ না যোগ করছেন, ততক্ষণ নিচের ফর্মে পুরো ক্যাটালগ দেখাবে (আগের মতো)।',
+                    "No yarn linked yet — until you add one, the forms below show the full catalog (as before)."
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
           {error && <p className="text-sm text-red">{error}</p>}
 
           {canManage && (
@@ -586,7 +741,7 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={receiveForm.yarnItemId} onChange={(e) => setReceiveForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {yarnItems.map((y) => (
+                    {styleYarnItems.map((y) => (
                       <option key={y.id} value={y.id}>{y.name}</option>
                     ))}
                   </select>
@@ -620,7 +775,7 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={issueForm.yarnItemId} onChange={(e) => setIssueForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {yarnItems.map((y) => (
+                    {styleYarnItems.map((y) => (
                       <option key={y.id} value={y.id}>{y.name}</option>
                     ))}
                   </select>
@@ -641,9 +796,17 @@ export default function StyleYarnTracking() {
                         </option>
                       ))}
                   </select>
-                  {issueForm.yarnItemId && blockBalancesFor(issueForm.yarnItemId).length === 0 && (
+                  {issueForm.yarnItemId && blockBalancesFor(issueForm.yarnItemId).length === 0 && pendingInspectionFor(issueForm.yarnItemId).length === 0 && (
                     <p className="mt-1 text-xs text-red">
                       {t('এই ইয়ার্নের কোনো ব্লকে এখনো স্টক নেই — আগে রিসিভ করুন।', 'No block has any stock for this yarn yet — receive it first.')}
+                    </p>
+                  )}
+                  {issueForm.yarnItemId && pendingInspectionFor(issueForm.yarnItemId).length > 0 && (
+                    <p className="mt-1 text-xs text-amber">
+                      {t(
+                        `${pendingInspectionFor(issueForm.yarnItemId).reduce((s, e) => s + Number(e.qty || 0), 0).toFixed(2)} lb এখনো QC ইন্সপেকশনের অপেক্ষায় — পাস না হওয়া পর্যন্ত ইস্যু করা যাবে না।`,
+                        `${pendingInspectionFor(issueForm.yarnItemId).reduce((s, e) => s + Number(e.qty || 0), 0).toFixed(2)} lb is still awaiting QC inspection — not issuable until passed.`
+                      )}
                     </p>
                   )}
                 </Field>
@@ -719,7 +882,7 @@ export default function StyleYarnTracking() {
                   <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                     <select value={adjustForm.yarnItemId} onChange={(e) => setAdjustForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                       <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                      {yarnItems.map((y) => (
+                      {styleYarnItems.map((y) => (
                         <option key={y.id} value={y.id}>{y.name}</option>
                       ))}
                     </select>
@@ -774,7 +937,7 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={transferForm.yarnItemId} onChange={(e) => setTransferForm((f) => ({ ...f, yarnItemId: e.target.value }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {yarnItems.map((y) => (
+                    {styleYarnItems.map((y) => (
                       <option key={y.id} value={y.id}>{y.name}</option>
                     ))}
                   </select>
@@ -827,7 +990,7 @@ export default function StyleYarnTracking() {
                 <Field label={t('ইয়ার্ন *', 'Yarn *')}>
                   <select value={returnForm.yarnItemId} onChange={(e) => setReturnForm((f) => ({ ...f, yarnItemId: e.target.value, block: '' }))} className={inputClass}>
                     <option value="">{t('নির্বাচন করুন', 'Select')}</option>
-                    {yarnItems.map((y) => (
+                    {styleYarnItems.map((y) => (
                       <option key={y.id} value={y.id}>{y.name}</option>
                     ))}
                   </select>
@@ -927,7 +1090,8 @@ export default function StyleYarnTracking() {
                       <th className="py-2 pr-4 font-medium">{t('অর্ডার', 'Ordered')}</th>
                       <th className="py-2 pr-4 font-medium">{t('রিসিভড', 'Received')}</th>
                       <th className="py-2 pr-4 font-medium">{t('বাকি রিসিভ', 'To Receive')}</th>
-                      <th className="py-2 pr-4 font-medium">{t('স্টোরে', 'At Store')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('স্টোরে (ইস্যুযোগ্য)', 'At Store (issuable)')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইন্সপেকশন বাকি', 'Awaiting Inspection')}</th>
                       <th className="py-2 pr-4 font-medium">{t('ওয়াইন্ডিং-এ', 'At Winding')}</th>
                       <th className="py-2 pr-4 font-medium">{t('নিটিং-প্রস্তুত', 'Knitting-Ready')}</th>
                     </tr>
@@ -940,6 +1104,13 @@ export default function StyleYarnTracking() {
                         <td className="py-2 pr-4 text-ink-soft">{b.received.toFixed(2)} lb</td>
                         <td className="py-2 pr-4 text-ink-soft">{b.balanceToReceive.toFixed(2)} lb</td>
                         <td className="py-2 pr-4 text-ink-soft">{b.atStore.toFixed(2)} lb</td>
+                        <td className="py-2 pr-4 text-ink-soft">
+                          {b.pendingInspection > 0 ? (
+                            <span className="rounded-full bg-amber-soft px-2 py-0.5 text-amber">{b.pendingInspection.toFixed(2)} lb</span>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
                         <td className="py-2 pr-4 text-ink-soft">{b.atWinding.toFixed(2)} lb</td>
                         <td className="py-2 pr-4 font-medium text-ink">{b.readyForKnitting.toFixed(2)} lb</td>
                       </tr>
@@ -975,6 +1146,7 @@ export default function StyleYarnTracking() {
                       <th className="py-2 pr-4 font-medium">{t('ধরন', 'Type')}</th>
                       <th className="py-2 pr-4 font-medium">{t('ইয়ার্ন', 'Yarn')}</th>
                       <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইন্সপেকশন', 'Inspection')}</th>
                       <th className="py-2 pr-4 font-medium">{t('বিস্তারিত', 'Detail')}</th>
                       <th className="py-2 pr-4 font-medium"></th>
                     </tr>
@@ -986,6 +1158,9 @@ export default function StyleYarnTracking() {
                         <td className="py-2 pr-4 text-ink">{t(LEDGER_LABELS[e.type]?.bn, LEDGER_LABELS[e.type]?.en)}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.yarnItemName}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.qty} lb</td>
+                        <td className="py-2 pr-4">
+                          {e.type === 'receipt' && <InspectionBadge status={e.inspectionStatus} t={t} />}
+                        </td>
                         <td className="py-2 pr-4 text-ink-soft">
                           {e.fromSection && e.toSection && `${t(STAGES.find((s) => s.key === e.fromSection)?.label, STAGES.find((s) => s.key === e.fromSection)?.labelEn)} → ${t(STAGES.find((s) => s.key === e.toSection)?.label, STAGES.find((s) => s.key === e.toSection)?.labelEn)} `}
                           {e.block && `${t('ব্লক', 'Block')}: ${e.block} `}

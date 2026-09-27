@@ -127,3 +127,32 @@ export function Modal({ title, onClose, children, wide }) {
     </div>
   );
 }
+
+// Small colored pill for a receiving-inspection status (pending / passed /
+// hold / approved-despite-issue / rejected), shared by Yarn Tracking,
+// Accessory Tracking and the Receiving Inspection page so the same colors
+// mean the same thing everywhere.
+export function InspectionBadge({ status, t }) {
+  const s = status || 'pending';
+  const tone =
+    s === 'passed'
+      ? 'bg-green/10 text-green'
+      : s === 'approved'
+      ? 'bg-amber-soft text-amber'
+      : s === 'hold'
+      ? 'bg-red-soft text-red'
+      : s === 'rejected'
+      ? 'bg-red text-white'
+      : 'bg-line/60 text-ink-soft';
+  const label =
+    s === 'passed'
+      ? t('পাস', 'Passed')
+      : s === 'approved'
+      ? t('অনুমোদিত', 'Approved')
+      : s === 'hold'
+      ? t('হোল্ড', 'Hold')
+      : s === 'rejected'
+      ? t('বাতিল', 'Rejected')
+      : t('অপেক্ষমাণ', 'Pending');
+  return <span className={`inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${tone}`}>{label}</span>;
+}

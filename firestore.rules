@@ -58,6 +58,14 @@ service cloud.firestore {
       return isAdmin() || (isActive() && myProfile().canApproveYarnOverage == true);
     }
 
+    // Who may decide a receiving-inspection hold (approve despite an issue,
+    // or reject): the Quality Manager (granted the 'quality' admin area) or
+    // a Higher Authority — mirrors canDecideInspectionHold() in
+    // lib/constants.js.
+    function canDecideInspection() {
+      return hasAdminArea('quality') || isYarnApprover();
+    }
+
     // --- Collection-group access -------------------------------------
     // Firestore requires a SEPARATE rule (beyond the nested subcollection
     // rule above) to permit collectionGroup() queries that read across
@@ -65,13 +73,13 @@ service cloud.firestore {
     // cross-style yarnLedger query and Dashboard's cross-style
     // productionEntries query silently fail with permission-denied.
     match /{path=**}/yarnLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
     }
     match /{path=**}/accessoryLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
     }
     match /{path=**}/productionEntries/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq']);
     }
     match /{path=**}/shipments/{shipmentId} {
       allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
@@ -107,7 +115,7 @@ service cloud.firestore {
     // extended by someone permitted to work in that section.
     match /defectTypes/{section} {
       allow read: if isSignedIn();
-      allow create, update: if hasRole(['admin', 'production']) && canEnterSection(section);
+      allow create, update: if hasRole(['admin', 'production', 'gpq']) && canEnterSection(section);
       allow delete: if isAdmin();
     }
 
@@ -138,16 +146,30 @@ service cloud.firestore {
 
     // styles/{styleId} — orders / production tracking.
     match /styles/{styleId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-      allow create, update: if hasRole(['admin', 'merchandising'])
+      // GPQ and IE both have 'style:view' (and IE has 'style:edit') as a
+      // client-side permission, but were missing from this read rule —
+      // that silently broke everything for them: StyleSearchSelect (used
+      // by QC Entry, Shipment Tracking, IE) couldn't load any styles at
+      // all, so a GPQ user could never even pick a style to log a QC
+      // report against, regardless of their section access.
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+      allow create: if hasRole(['admin', 'merchandising']);
+      allow update: if hasRole(['admin', 'merchandising'])
         // also allow production-entry writes to the parent style's stage
-        // counters (StyleDetail increments styles/{id}.stages.{stage}).
-        || hasRole(['admin', 'production']);
+        // counters (StyleDetail increments styles/{id}.stages.{stage}) —
+        // GPQ logs entries too (e.g. final stages), and IE can edit style
+        // capacity/GG details.
+        || hasRole(['admin', 'production', 'gpq'])
+        || hasRole(['admin', 'ie'])
+        // Store links/unlinks which yarns belong to this style (Style
+        // Yarn Tracking's "This Style's Yarns" picker) — restricted to
+        // touching only that one field, nothing else about the style.
+        || (hasRole(['admin', 'store']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['yarnItemIds']));
       allow delete: if isAdmin();
 
       match /productionEntries/{entryId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-        allow create: if hasRole(['admin', 'production']) && canEnterSection(request.resource.data.stage);
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq']);
+        allow create: if hasRole(['admin', 'production', 'gpq']) && canEnterSection(request.resource.data.stage);
         allow update, delete: if hasAdminArea('production');
       }
 
@@ -156,7 +178,7 @@ service cloud.firestore {
       // consumption. Balances are always derived client-side from this
       // ledger, never stored, so deleting a wrong entry stays consistent.
       match /yarnLedger/{entryId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
         // blockAdjustIn/blockAdjustOut are manual reconciliation entries
         // (correcting a mistake or old data), not routine store activity —
         // restricted to admin / inventory-area-admin specifically, unlike
@@ -179,17 +201,36 @@ service cloud.firestore {
         // The Yarn Manager (store role) may update ONLY the `block` field
         // (A-M storage location) on an entry — everything else about a
         // ledger entry needs admin or inventory-area-admin rights to edit.
+        // Two more narrow, field-limited exceptions for the receiving-
+        // inspection gate (see Quality ▸ Receiving Inspection): QC
+        // (admin/production/gpq — same roles as qualityChecks create)
+        // records the initial pass/hold result; a Quality Manager/Higher
+        // Authority (canDecideInspection) then approves or rejects a hold.
         allow update: if hasAdminArea('inventory')
-          || (hasRole(['admin', 'store']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['block']));
+          || (hasRole(['admin', 'store']) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['block']))
+          || (hasRole(['admin', 'production', 'gpq'])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['inspectionStatus', 'inspectedQty', 'inspectionResult', 'inspectionNotes', 'inspectedBy', 'inspectionDate']))
+          || (canDecideInspection()
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['inspectionStatus', 'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt', 'rejectionReason']));
         allow delete: if hasAdminArea('inventory');
       }
 
       // Style-wise accessory ledger: receive against style (chalan/
       // supplier) -> issue to a specific production section.
       match /accessoryLedger/{entryId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
         allow create: if hasRole(['admin', 'store']) || canEnterSection('accessoriesStore');
-        allow update, delete: if hasAdminArea('inventory');
+        // Same receiving-inspection field-limited exceptions as yarnLedger.
+        allow update: if hasAdminArea('inventory')
+          || (hasRole(['admin', 'production', 'gpq'])
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['inspectionStatus', 'inspectedQty', 'inspectionResult', 'inspectionNotes', 'inspectedBy', 'inspectionDate']))
+          || (canDecideInspection()
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['inspectionStatus', 'approvedBy', 'approvedAt', 'rejectedBy', 'rejectedAt', 'rejectionReason']));
+        allow delete: if hasAdminArea('inventory');
       }
 
       // Style-wise shipment records: GPQ logs final inspection + shipment
@@ -208,7 +249,7 @@ service cloud.firestore {
       // approver (Admin/PD/MD/DGM, see isYarnApprover()) may approve/reject
       // — the matching yarnLedger entry is only ever created after that.
       match /yarnIssueApprovals/{reqId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
         allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
         allow update: if isYarnApprover();
         allow delete: if isAdmin();
@@ -223,12 +264,13 @@ service cloud.firestore {
       }
     }
     match /inventoryItems/{itemId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      // gpq/ie both have 'inventory:view' client-side but were missing here.
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
       allow create, update: if hasRole(['admin', 'store']);
       allow delete: if hasAdminArea('inventory');
 
       match /transactions/{txnId} {
-        allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+        allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
         allow create: if hasRole(['admin', 'store']);
         allow update, delete: if hasAdminArea('inventory');
       }
@@ -236,17 +278,21 @@ service cloud.firestore {
 
     // qualityChecks/{checkId} — daily QC entries per style + section
     // (+ block), used for the traffic-light dashboard, reports and trends.
+    // GPQ is the department that actually does this QC entry day to day —
+    // it was missing from create/read here, which silently blocked every
+    // GPQ user from submitting QC data regardless of their section access.
     match /qualityChecks/{checkId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-      allow create: if hasRole(['admin', 'production']) && canEnterSection(request.resource.data.section);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+      allow create: if hasRole(['admin', 'production', 'gpq']) && canEnterSection(request.resource.data.section);
       allow update, delete: if hasAdminArea('quality');
     }
 
     // zeroThreadReports/{reportId} — factory-wide daily loose/uncut thread
-    // checkpoint (one entry per date, editable), NOT tied to a style.
+    // checkpoint (one entry per date, editable), NOT tied to a style. Also
+    // a GPQ/QC checkpoint, so GPQ needs create/read here too.
     match /zeroThreadReports/{reportId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
-      allow create, update: if hasRole(['admin', 'production']);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
+      allow create, update: if hasRole(['admin', 'production', 'gpq']);
       allow delete: if hasAdminArea('quality');
     }
 
@@ -256,7 +302,7 @@ service cloud.firestore {
     // other style. Top-level (not nested under a style) since it is
     // explicitly cross-style pooled stock.
     match /yarnLeftoverLedger/{entryId} {
-      allow read: if hasRole(['admin', 'merchandising', 'production', 'store']);
+      allow read: if hasRole(['admin', 'merchandising', 'production', 'store', 'gpq', 'ie']);
       allow create: if hasRole(['admin', 'store']) || canEnterSection('yarnStore');
       allow update, delete: if hasAdminArea('inventory');
     }

@@ -13,10 +13,10 @@ import {
 import { Trash2, Pencil, PackageCheck, Send } from 'lucide-react';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
-import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal } from '../../components/ui';
+import { Field, inputClass, btnPrimary, btnSecondary, EmptyState, Modal, InspectionBadge } from '../../components/ui';
 import ExportBar from '../../components/ExportBar';
 import StyleSearchSelect from '../../components/StyleSearchSelect';
-import { ALL_SECTIONS, ACCESSORIES_SECTION, canEnterSection, stageLabel, hasAreaAdmin } from '../../lib/constants';
+import { ALL_SECTIONS, ACCESSORIES_SECTION, canEnterSection, stageLabel, hasAreaAdmin, suggestedInspectionQty, INSPECTION_STATUS_LABELS } from '../../lib/constants';
 import { useLang } from '../../lib/i18n';
 
 function today() {
@@ -68,11 +68,18 @@ export default function StyleAccessoryTracking() {
   const balances = useMemo(() => {
     const map = new Map();
     (ledger || []).forEach((e) => {
-      if (!map.has(e.itemId)) map.set(e.itemId, { itemName: e.itemName, unit: e.unit, ordered: 0, received: 0, issued: 0 });
+      if (!map.has(e.itemId)) map.set(e.itemId, { itemName: e.itemName, unit: e.unit, ordered: 0, received: 0, issued: 0, pendingInspection: 0 });
       const b = map.get(e.itemId);
       const q = Number(e.qty || 0);
       if (e.type === 'order') b.ordered += q;
-      if (e.type === 'receipt') b.received += q;
+      if (e.type === 'receipt') {
+        // Same QC gate as yarn: 10% of every chalan must be inspected
+        // before it's issuable. Older receipts (no inspectionStatus at
+        // all) are treated as already-cleared for backward compatibility.
+        const cleared = !e.inspectionStatus || e.inspectionStatus === 'passed' || e.inspectionStatus === 'approved';
+        if (cleared) b.received += q;
+        else b.pendingInspection += q;
+      }
       if (e.type === 'issue') b.issued += q;
     });
     return Array.from(map.entries()).map(([itemId, b]) => ({
@@ -82,6 +89,11 @@ export default function StyleAccessoryTracking() {
       balance: b.received - b.issued,
     }));
   }, [ledger]);
+
+  const pendingInspectionFor = (itemId) =>
+    (ledger || []).filter(
+      (e) => e.itemId === itemId && e.type === 'receipt' && (e.inspectionStatus === 'pending' || e.inspectionStatus === 'hold')
+    );
 
   async function handleOrder(e) {
     e.preventDefault();
@@ -131,6 +143,11 @@ export default function StyleAccessoryTracking() {
       styleLabel: style ? `${style.styleNo}${style.styleName ? ' — ' + style.styleName : ''}` : '',
       enteredBy: profile?.name || user?.email,
       createdAt: serverTimestamp(),
+      // Same receiving-inspection gate as yarn — see Quality ▸ Receiving
+      // Inspection. Not issuable until QC passes (or a Higher
+      // Authority/Quality Manager approves it despite a flagged issue).
+      inspectionStatus: 'pending',
+      inspectionSuggestedQty: suggestedInspectionQty(n),
     });
     setReceiveForm({ itemId: '', qty: '', chalanNo: '', supplier: '', date: today(), notes: '' });
   }
@@ -146,7 +163,15 @@ export default function StyleAccessoryTracking() {
     }
     const bal = balances.find((b) => b.itemId === item.id)?.balance || 0;
     if (n > bal + 0.001) {
-      setError(t(`স্টোরে বর্তমানে ${bal} ${item.unit} আছে, এর বেশি ইস্যু করা যাবে না।`, `Only ${bal} ${item.unit} available — cannot issue more.`));
+      const pending = pendingInspectionFor(item.id).reduce((s, e) => s + Number(e.qty || 0), 0);
+      setError(
+        pending > 0
+          ? t(
+              `স্টোরে ইস্যুযোগ্য আছে ${bal} ${item.unit} (আরও ${pending} ${item.unit} QC ইন্সপেকশনের অপেক্ষায়, এখনই ইস্যু করা যাবে না)।`,
+              `Only ${bal} ${item.unit} is issuable (another ${pending} ${item.unit} is awaiting QC inspection and can't be issued yet).`
+            )
+          : t(`স্টোরে বর্তমানে ${bal} ${item.unit} আছে, এর বেশি ইস্যু করা যাবে না।`, `Only ${bal} ${item.unit} available — cannot issue more.`)
+      );
       return;
     }
     await addDoc(collection(db, 'styles', styleId, 'accessoryLedger'), {
@@ -190,6 +215,11 @@ export default function StyleAccessoryTracking() {
     { key: 'section', label: t('সেকশন', 'Section'), render: (r) => (r.section ? stageLabel(r.section, lang) : '') },
     { key: 'chalanNo', label: t('চালান নং', 'Chalan No.') },
     { key: 'supplier', label: t('সাপ্লায়ার', 'Supplier') },
+    {
+      key: 'inspectionStatus',
+      label: t('ইন্সপেকশন', 'Inspection'),
+      render: (r) => (r.type === 'receipt' ? t(INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.bn, INSPECTION_STATUS_LABELS[r.inspectionStatus || 'pending']?.en) : ''),
+    },
     { key: 'enteredBy', label: t('এন্ট্রি করেছেন', 'Entered By') },
   ];
 
@@ -319,7 +349,14 @@ export default function StyleAccessoryTracking() {
                       <td className="py-2 pr-4 text-ink-soft">{t('অর্ডার', 'Ordered')}: {b.ordered} {b.unit}</td>
                       <td className="py-2 pr-4 text-ink-soft">{t('রিসিভড', 'Received')}: {b.received} {b.unit}</td>
                       <td className="py-2 pr-4 text-ink-soft">{t('ইস্যু', 'Issued')}: {b.issued} {b.unit}</td>
-                      <td className="py-2 pr-4 font-medium text-ink">{t('স্টোরে আছে', 'At Store')}: {b.balance} {b.unit}</td>
+                      <td className="py-2 pr-4 font-medium text-ink">{t('স্টোরে আছে/ইস্যুযোগ্য', 'At Store/Issuable')}: {b.balance} {b.unit}</td>
+                      {b.pendingInspection > 0 && (
+                        <td className="py-2 pr-4">
+                          <span className="rounded-full bg-amber-soft px-2 py-0.5 text-xs text-amber">
+                            {t('ইন্সপেকশন বাকি', 'Awaiting Inspection')}: {b.pendingInspection} {b.unit}
+                          </span>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -352,6 +389,7 @@ export default function StyleAccessoryTracking() {
                       <th className="py-2 pr-4 font-medium">{t('ধরন', 'Type')}</th>
                       <th className="py-2 pr-4 font-medium">{t('আইটেম', 'Item')}</th>
                       <th className="py-2 pr-4 font-medium">{t('কোয়ান্টিটি', 'Quantity')}</th>
+                      <th className="py-2 pr-4 font-medium">{t('ইন্সপেকশন', 'Inspection')}</th>
                       <th className="py-2 pr-4 font-medium">{t('বিস্তারিত', 'Detail')}</th>
                       <th className="py-2 pr-4 font-medium"></th>
                     </tr>
@@ -363,6 +401,7 @@ export default function StyleAccessoryTracking() {
                         <td className="py-2 pr-4 text-ink">{e.type === 'order' ? t('অর্ডার', 'Ordered') : e.type === 'receipt' ? t('রিসিভড', 'Received') : t('ইস্যু', 'Issued')}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.itemName}</td>
                         <td className="py-2 pr-4 text-ink-soft">{e.qty} {e.unit}</td>
+                        <td className="py-2 pr-4">{e.type === 'receipt' && <InspectionBadge status={e.inspectionStatus} t={t} />}</td>
                         <td className="py-2 pr-4 text-ink-soft">
                           {e.section && `${stageLabel(e.section, lang)} `}
                           {e.chalanNo && `${t('চালান', 'Chalan')}: ${e.chalanNo} `}

@@ -199,6 +199,30 @@ export function isYarnOverageApprover(profile) {
   return profile.canApproveYarnOverage === true;
 }
 
+// Who can decide a receiving-inspection "hold" (a yarn/accessory lot QC
+// flagged with a problem) — the factory's Quality Manager (granted the
+// 'quality' admin area) or a Higher Authority (Admin/PD/MD/DGM, same group
+// that approves yarn-issue overages). GPQ does the inspection itself but
+// does not self-approve its own holds unless also in one of these groups.
+export function canDecideInspectionHold(profile) {
+  return hasAreaAdmin(profile, 'quality') || isYarnOverageApprover(profile);
+}
+
+// 10% of the received quantity, rounded up to a sensible check quantity —
+// the standard sample size QC is asked to inspect on every receipt.
+export function suggestedInspectionQty(receivedQty) {
+  const n = Number(receivedQty) || 0;
+  return Math.ceil(n * 0.1 * 100) / 100;
+}
+
+export const INSPECTION_STATUS_LABELS = {
+  pending: { bn: 'ইন্সপেকশনের অপেক্ষায়', en: 'Awaiting Inspection' },
+  passed: { bn: 'পাস', en: 'Passed' },
+  hold: { bn: 'হোল্ড (অনুমোদনের অপেক্ষায়)', en: 'Hold (awaiting approval)' },
+  approved: { bn: 'সমস্যা সত্ত্বেও অনুমোদিত', en: 'Approved despite issue' },
+  rejected: { bn: 'বাতিল', en: 'Rejected' },
+};
+
 export function emptyStageMap(fill = 0) {
   return Object.fromEntries(STAGE_KEYS.map((k) => [k, fill]));
 }
