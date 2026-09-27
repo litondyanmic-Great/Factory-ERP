@@ -26,7 +26,6 @@ import ZeroThreadReport from './pages/quality/ZeroThreadReport';
 import QualityTrends from './pages/quality/QualityTrends';
 import ShipmentTracking from './pages/quality/ShipmentTracking';
 import ReceivingInspection from './pages/quality/ReceivingInspection';
-import ReceivingInspection from './pages/quality/ReceivingInspection';
 import IEDashboard from './pages/ie/IEDashboard';
 import StyleAccessoryTracking from './pages/inventory/StyleAccessoryTracking';
 import YarnBlockManager from './pages/inventory/YarnBlockManager';
@@ -212,14 +211,6 @@ export default function App() {
               element={
                 <ProtectedRoute permission="shipment:view">
                   <ShipmentTracking />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/quality/inspection"
-              element={
-                <ProtectedRoute permission="quality:view">
-                  <ReceivingInspection />
                 </ProtectedRoute>
               }
             />
