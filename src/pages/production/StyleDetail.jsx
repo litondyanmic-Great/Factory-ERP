@@ -25,6 +25,37 @@ import { useLang } from '../../lib/i18n';
 import { fileToCompressedDataUrl } from '../../lib/imageUtils';
 import PoColourEditor, { emptyPo, posSummary, poSubtotal } from '../../components/PoColourEditor';
 
+// A stage's real prerequisite: the style-specific override if one was set
+// (Edit Style > Customize Stage Order), otherwise just "the stage right
+// before it" in the normal STAGES sequence. index must be > 0.
+function effectivePrereqKey(style, stageKey, index) {
+  return style?.stagePrerequisites?.[stageKey] || STAGES[index - 1].key;
+}
+
+// Every other stage (besides stageKey itself) whose effective prerequisite
+// is also prereqKey — i.e. every stage configured to draw from the same
+// upstream pool as this one (e.g. Trimming, Mending and Wash can all be
+// set to follow directly from Linking).
+function siblingStagesSharingPrereq(style, prereqKey, stageKey) {
+  return STAGES.filter((s, i) => i > 0 && s.key !== stageKey && effectivePrereqKey(style, s.key, i) === prereqKey).map((s) => s.key);
+}
+
+// How many pieces are still free to log at `stage` right now: the
+// prerequisite stage's total output, minus whatever every stage sharing
+// that same prerequisite (this one included) has already claimed of it.
+// With only one stage on a given prerequisite this is identical to the
+// simple "previous stage total minus my total" check; with several stages
+// sharing one prerequisite, it correctly treats them as splitting one pool
+// instead of each getting the full amount independently.
+function sharedPoolAvailable(style, stage, stageIndex) {
+  const prereqKey = effectivePrereqKey(style, stage, stageIndex);
+  const siblings = siblingStagesSharingPrereq(style, prereqKey, stage);
+  const claimedBySiblings = siblings.reduce((sum, k) => sum + (style.stages?.[k] || 0), 0);
+  const ownDone = style.stages?.[stage] || 0;
+  const prereqTotal = style.stages?.[prereqKey] || 0;
+  return prereqTotal - claimedBySiblings - ownDone;
+}
+
 export default function StyleDetail() {
   const { id } = useParams();
   const { user, profile } = useAuth();
@@ -167,21 +198,34 @@ export default function StyleDetail() {
       }
     } else if (stageIndex > 0) {
       // Every later stage is capped by how much WIP its prerequisite stage
-      // has actually produced (that stage's cumulative output minus what
-      // this stage has already consumed of it) — a stage can't "invent"
-      // pieces that were never sent forward from its prerequisite. By
-      // default the prerequisite is just "the stage before it" in STAGES,
-      // but a style can override this per stage (Edit Style > Customize
-      // Stage Order) for cases where the real factory flow differs, e.g.
-      // Attachment needing to run before Sewing for a particular style.
-      const prevKey = style.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
-      const available = (style.stages?.[prevKey] || 0) - (style.stages?.[stage] || 0);
+      // has actually produced — a stage can't "invent" pieces that were
+      // never sent forward from its prerequisite. By default the
+      // prerequisite is just "the stage before it" in STAGES, but a style
+      // can override this per stage (Edit Style > Customize Stage Order),
+      // e.g. so Trimming, Mending AND Wash can all be set to draw
+      // straight from Linking — a piece can go whichever way it actually
+      // went on the floor, operator's choice at entry time.
+      //
+      // When more than one stage shares the same prerequisite like that,
+      // they're drawing from the SAME pool of WIP, not separate ones — so
+      // the cap must be shared: total logged across Trimming + Mending +
+      // Wash together can never exceed what Linking actually produced,
+      // otherwise the same pieces could be double-counted as available to
+      // more than one of them at once.
+      const available = sharedPoolAvailable(style, stage, stageIndex);
       if (n > available + 0.0001) {
+        const prevKey = style.stagePrerequisites?.[stage] || STAGES[stageIndex - 1].key;
+        const siblings = siblingStagesSharingPrereq(style, prevKey, stage);
         setError(
-          t(
-            `${stageLabel(prevKey, 'bn')} থেকে এখনো এই স্টেজে মাত্র ${available} পিস এসেছে (বাকি), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
-            `Only ${available} pcs is currently available from ${stageLabel(prevKey, 'en')} — cannot log more than that here.`
-          )
+          siblings.length > 0
+            ? t(
+                `${stageLabel(prevKey, 'bn')} থেকে মোট মাত্র ${available} পিস এখনো বাকি আছে (${siblings.map((k) => stageLabel(k, 'bn')).join(', ')}-এর সাথে ভাগ করা পুল), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
+                `Only ${available} pcs is still available from ${stageLabel(prevKey, 'en')} (shared pool with ${siblings.map((k) => stageLabel(k, 'en')).join(', ')}) — cannot log more than that here.`
+              )
+            : t(
+                `${stageLabel(prevKey, 'bn')} থেকে এখনো এই স্টেজে মাত্র ${available} পিস এসেছে (বাকি), এর বেশি এন্ট্রি দেওয়া যাবে না।`,
+                `Only ${available} pcs is currently available from ${stageLabel(prevKey, 'en')} — cannot log more than that here.`
+              )
         );
         return;
       }
@@ -457,8 +501,8 @@ export default function StyleDetail() {
         <h2 className="mb-1 font-display text-sm font-semibold text-ink">{t('স্টেজ-ভিত্তিক অগ্রগতি', 'Stage-wise Progress')}</h2>
         <p className="mb-4 text-xs text-ink-soft">
           {t(
-            'একটি স্টেজে এন্ট্রি দেওয়া মানেই সেটা পরের স্টেজের জন্য স্বয়ংক্রিয়ভাবে "পাঠানো" হয়ে যায় — যেমন নিটিং ১০০ পিস করলে লিংকিং সর্বোচ্চ ১০০ পিস এন্ট্রি দিতে পারবে, তার বেশি না। "WIP" ব্যাজ দেখায় আগের স্টেজ থেকে কত পিস এখনো এই স্টেজে আসেনি ঢোকানো — অর্থাৎ বাকি আছে।',
-            'Logging an entry at one stage automatically "sends" it forward to the next — e.g. once Knitting has done 100 pcs, Linking can log at most 100 pcs, no more. The "WIP" badge shows how much has been sent from the previous stage but not yet entered here.'
+            'একটি স্টেজে এন্ট্রি দেওয়া মানেই সেটা পরের স্টেজের জন্য স্বয়ংক্রিয়ভাবে "পাঠানো" হয়ে যায় — যেমন নিটিং ১০০ পিস করলে লিংকিং সর্বোচ্চ ১০০ পিস এন্ট্রি দিতে পারবে, তার বেশি না। "WIP" ব্যাজ দেখায় আগের স্টেজ থেকে কত পিস এখনো এই স্টেজে আসেনি ঢোকানো — অর্থাৎ বাকি আছে। "শেয়ার্ড পুল" ব্যাজ থাকা স্টেজগুলো (যেমন লিংকিং-এর পর ট্রিমিং/মেন্ডিং/ওয়াশ, ইচ্ছেমতো যেকোনোটায় পাঠানো যায় এমন সেটআপে) একই আপস্ট্রিম আউটপুট নিজেদের মধ্যে ভাগ করে নেয় — যেকোনো একটায় এন্ট্রি দিলে বাকিগুলোর জন্য পুল কমে যায়।',
+            'Logging an entry at one stage automatically "sends" it forward to the next — e.g. once Knitting has done 100 pcs, Linking can log at most 100 pcs, no more. The "WIP" badge shows how much has been sent from the previous stage but not yet entered here. Stages tagged "shared pool" (e.g. Trimming/Mending/Wash all set to follow directly from Linking, so a piece can go whichever way it actually went) split the same upstream output between them — logging at any one of them reduces what\'s left for the others.'
           )}
         </p>
         <div className="space-y-4">
@@ -467,9 +511,9 @@ export default function StyleDetail() {
             const pct = style.orderQty > 0 ? Math.min(100, Math.round((done / style.orderQty) * 100)) : 0;
             const overQty = done - Number(style.orderQty || 0);
             const overPct = style.orderQty > 0 && overQty > 0 ? Math.round((overQty / style.orderQty) * 100) : 0;
-            const prevKey = i > 0 ? style.stagePrerequisites?.[s.key] || STAGES[i - 1].key : null;
-            const prevDone = i > 0 ? style.stages?.[prevKey] || 0 : null;
-            const wip = i > 0 ? Math.max(0, prevDone - done) : null;
+            const prevKey = i > 0 ? effectivePrereqKey(style, s.key, i) : null;
+            const siblings = i > 0 ? siblingStagesSharingPrereq(style, prevKey, s.key) : [];
+            const wip = i > 0 ? Math.max(0, sharedPoolAvailable(style, s.key, i)) : null;
             return (
               <div key={s.key}>
                 <div className="mb-1 flex flex-wrap items-center justify-between gap-x-3 text-sm">
@@ -478,6 +522,11 @@ export default function StyleDetail() {
                     {i > 0 && prevKey !== STAGES[i - 1].key && (
                       <span className="ml-1.5 rounded-full bg-indigo-soft px-1.5 py-0.5 text-[10px] font-medium text-indigo">
                         {t('কাস্টম অর্ডার', 'custom order')}: {stageLabel(prevKey, lang)} →
+                      </span>
+                    )}
+                    {i > 0 && siblings.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-amber-soft px-1.5 py-0.5 text-[10px] font-medium text-amber" title={t('এই স্টেজগুলো একই আপস্ট্রিম আউটপুট ভাগ করে নেয়', 'These stages share the same upstream output')}>
+                        {t('শেয়ার্ড পুল', 'shared pool')}: {siblings.map((k) => stageLabel(k, lang)).join(', ')}
                       </span>
                     )}
                   </span>
@@ -982,8 +1031,8 @@ function EditStyleModal({ style, onClose }) {
           </button>
           <p className="mt-1 text-xs text-ink-soft">
             {t(
-              'সাধারণত প্রতিটা স্টেজ তার আগের স্টেজের উপর নির্ভর করে (নিটিং → লিংকিং → ট্রিমিং …)। কোনো বিশেষ কারণে এই স্টাইলে যদি ক্রম আলাদা হয় (যেমন অ্যাটাচমেন্ট আগে করতে হবে), এখানে সেই স্টেজের জন্য আসল পূর্বশর্ত স্টেজ বেছে নিন।',
-              'Normally each stage depends on the one right before it (Knitting → Linking → Trimming …). If this particular style needs a different order for some reason (e.g. Attachment must happen earlier), pick the real prerequisite stage for it here.'
+              'সাধারণত প্রতিটা স্টেজ তার আগের স্টেজের উপর নির্ভর করে (নিটিং → লিংকিং → ট্রিমিং …)। কোনো বিশেষ কারণে এই স্টাইলে যদি ক্রম আলাদা হয় (যেমন অ্যাটাচমেন্ট আগে করতে হবে), এখানে সেই স্টেজের জন্য আসল পূর্বশর্ত স্টেজ বেছে নিন। একাধিক স্টেজকেও একই পূর্বশর্ত দেওয়া যায় — যেমন লিংকিং শেষ হওয়ার পর কিছু পিস ট্রিমিং-এ, কিছু সরাসরি মেন্ডিং-এ, কিছু সরাসরি ওয়াশ-এ যেতে পারে এমন হলে, ট্রিমিং/মেন্ডিং/ওয়াশ — তিনটারই পূর্বশর্ত "লিংকিং" সেট করে দিন। তখন এই তিনটা স্টেজ লিংকিং-এর একই আউটপুট নিজেদের মধ্যে ভাগ করে নেবে (একজন বেশি নিলে বাকিদের জন্য কম থাকবে)।',
+              'Normally each stage depends on the one right before it (Knitting → Linking → Trimming …). If this particular style needs a different order for some reason (e.g. Attachment must happen earlier), pick the real prerequisite stage for it here. Several stages can also share the same prerequisite — e.g. if after Linking some pieces go to Trimming, some straight to Mending, and some straight to Wash, set all three (Trimming/Mending/Wash) to have "Linking" as their prerequisite. They will then split Linking\'s output between them (logging more at one leaves less available for the others).'
             )}
           </p>
           {showStageOrder && (
